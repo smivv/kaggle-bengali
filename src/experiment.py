@@ -22,16 +22,19 @@ class Experiment(ConfigExperiment):
         elif stage == "stage2":
             for param in model_.backbone.parameters():
                 param.requires_grad = True
+
         return model_
 
     @staticmethod
     def get_transforms(
         stage: str = None,
         mode: str = None,
-        image_size: int = 224,
+        image_height: int = 224,
+        image_width: int = 224,
         one_hot_classes: int = None
     ):
-        result_fn = get_transforms(image_size)[mode]
+        result_fn = get_transforms(image_height=image_height,
+                                   image_width=image_width)[mode]
         return Augmentor(
             dict_key="image", augment_fn=lambda x: result_fn(image=x)["image"]
         )
@@ -41,21 +44,26 @@ class Experiment(ConfigExperiment):
         stage: str,
         dataset_path: str = None,
         target_to_use: List = None,
-        image_size: int = 224,
+        image_height: int = 224,
+        image_width: int = 224,
         test_size: float = 0.2,
         test_only: bool = False,
+        use_original: bool = False,
         use_parquet: bool = False,
         files_to_load: List = None,
+        to_one_hot: bool = False,
+        stratified: bool = False,
     ):
-
-        datasets = get_datasets(
+        return get_datasets(
             dataset_path=dataset_path,
-            transforms=get_transforms(image_size=image_size),
+            transforms=get_transforms(image_height=image_height,
+                                      image_width=image_width),
             target_to_use=target_to_use,
             test_size=test_size,
             test_only=test_only,
+            use_original=use_original,
             use_parquet=use_parquet,
             files_to_load=files_to_load,
+            to_one_hot=to_one_hot,
+            stratified=stratified,
         )
-
-        return datasets

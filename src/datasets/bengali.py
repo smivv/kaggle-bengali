@@ -7,13 +7,14 @@ import pandas as pd
 
 from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
+from iterstrat.ml_stratifiers import MultilabelStratifiedShuffleSplit
 
 IMAGE_HEIGHT = 137
 IMAGE_WIDTH = 236
 IMAGE_SIZE = 128
 
 SEED = 69
-TEST_SIZE = 0.2
+TEST_SIZE = 0.1
 
 W1, W2, W3 = .5, .25, .25
 METRIC_WEIGHTS = [W1, W2, W3]
@@ -25,12 +26,20 @@ NUM_WORKERS = 4
 
 IMAGE_KEY = "image"
 
-GRAPHEME_KEY = "grapheme_root"
-VOWEL_KEY = "vowel_diacritic"
-CONSONANT_KEY = 'consonant_diacritic'
+GRAPHEME_INPUT_KEY = "grapheme_root"
+VOWEL_INPUT_KEY = "vowel_diacritic"
+CONSONANT_INPUT_KEY = 'consonant_diacritic'
 
-INPUT_KEYS = [GRAPHEME_KEY, VOWEL_KEY, CONSONANT_KEY]
-OUTPUT_KEYS = [f"{k}_pred" for k in INPUT_KEYS]
+GRAPHEME_KEY = GRAPHEME_INPUT_KEY
+VOWEL_KEY = VOWEL_INPUT_KEY
+CONSONANT_KEY = CONSONANT_INPUT_KEY
+
+GRAPHEME_OUTPUT_KEY = "grapheme_root_pred"
+VOWEL_OUTPUT_KEY = "vowel_diacritic_pred"
+CONSONANT_OUTPUT_KEY = 'consonant_diacritic_pred'
+
+INPUT_KEYS = (GRAPHEME_INPUT_KEY, VOWEL_INPUT_KEY, CONSONANT_INPUT_KEY)
+OUTPUT_KEYS = (GRAPHEME_OUTPUT_KEY, VOWEL_OUTPUT_KEY, CONSONANT_OUTPUT_KEY)
 
 NUM_CLASSES = [168, 11, 7]
 
@@ -42,9 +51,9 @@ class BengaliDataset(Dataset):
                  labels=None,
                  transforms=None,
                  target_to_use=None,
+                 use_original=False,
                  use_parquet=False,
-                 to_one_hot=False,
-                 mix_to_use=None):
+                 to_one_hot=False):
 
         self.images = images
 
@@ -54,10 +63,10 @@ class BengaliDataset(Dataset):
 
         self.labels = labels
         self.transforms = transforms
+        self.use_original = use_original
         self.use_parquet = use_parquet
         self.target_to_use = target_to_use
         self.to_one_hot = to_one_hot
-        self.mix_to_use = mix_to_use
 
     def __len__(self):
         return len(self.images)
@@ -115,46 +124,14 @@ class BengaliDataset(Dataset):
 
         return left, top, right, bottom
 
-    def cutmix(self, item, beta=1.0, p=0.2):
-        if beta <= 0 or np.random.rand(1) > p:
-            return item
-
-        item2 = self.get_item(random.choice(range(len(self))))
-
-        lam = np.random.beta(beta, beta)
-        l, t, r, b = BengaliDataset.rand_bbox(lam)
-        item[IMAGE_KEY][l:r, t:b] = item2[IMAGE_KEY][l:r, t:b]
-
-        lam = 1 - ((r - l) * (b - t) / (IMAGE_HEIGHT * IMAGE_WIDTH))
-
-        for i in self.target_to_use:
-            item[INPUT_KEYS[i]] = item[INPUT_KEYS[i]] * lam + \
-                                  item2[INPUT_KEYS[i]] * (1.0 - lam)
-
-        return item
-
-    def mixup(self, item, beta=1.0, p=0.2):
-        if beta <= 0 or np.random.rand(1) > p:
-            return item
-
-        item2 = self.get_item(random.choice(range(len(self))))
-
-        lam = np.random.beta(beta, beta)
-        item[IMAGE_KEY] = item[IMAGE_KEY] * lam + item2[IMAGE_KEY] * (1. - lam)
-
-        for i in self.target_to_use:
-            item[INPUT_KEYS[i]] = item[INPUT_KEYS[i]] * lam + \
-                                  item2[INPUT_KEYS[i]] * (1. - lam)
-
-        return item
-
     def get_item(self, idx):
         if self.use_parquet:
             image_id = self.image_ids[idx]
             image = 255 - self.images[idx].reshape(IMAGE_HEIGHT,
                                                    IMAGE_WIDTH).astype(np.uint8)
             image = (image * (255.0 / image.max())).astype(np.uint8)
-            image = BengaliDataset._crop_resize(image)
+            if not self.use_original:
+                image = BengaliDataset._crop_resize(image)
         else:
             path = self.images[idx]
             image_id = os.path.basename(path).split('.')[0]
@@ -166,8 +143,7 @@ class BengaliDataset(Dataset):
         }
 
         if self.transforms:
-            transformed = self.transforms(**result)
-            result[IMAGE_KEY] = transformed[IMAGE_KEY]
+            result[IMAGE_KEY] = self.transforms(**result)[IMAGE_KEY]
 
         result["image_id"] = image_id
 
@@ -184,13 +160,7 @@ class BengaliDataset(Dataset):
         return result
 
     def __getitem__(self, idx):
-        item = self.get_item(idx)
-        if self.labels is not None and self.transforms is not None:
-            if self.mix_to_use == "cutmix":
-                item = self.cutmix(item)
-            if self.mix_to_use == "mixup":
-                item = self.mixup(item)
-        return item
+        return self.get_item(idx)
 
 
 def get_parquet_paths(dataset_path, name, files_to_load=None):
@@ -234,8 +204,11 @@ def get_datasets(
         target_to_use=None,
         test_size=None,
         test_only=False,
+        use_original=False,
         use_parquet=False,
         files_to_load=None,
+        to_one_hot=False,
+        stratified=False
 ):
     datasets = collections.OrderedDict()
 
@@ -246,37 +219,75 @@ def get_datasets(
         if use_parquet:
             test_images = get_data(dataset_path, "test", files_to_load)
         else:
-            img_dir = os.path.join(dataset_path, "images", "test")
+            img_dir = os.path.join(dataset_path,
+                                   "original" if use_original else "images",
+                                   "test")
             test_images = [os.path.join(img_dir, p)
                            for p in os.listdir(img_dir)]
 
         datasets["test"] = BengaliDataset(test_images,
                                           transforms=transforms["test"],
                                           target_to_use=target_to_use,
-                                          use_parquet=use_parquet)
+                                          use_original=use_original,
+                                          use_parquet=use_parquet,
+                                          to_one_hot=to_one_hot)
         del test_images, transforms
         return datasets
 
     if use_parquet:
         train_images = get_data(dataset_path, "train", files_to_load)
     else:
-        img_dir = os.path.join(dataset_path, "images", "train")
+        img_dir = os.path.join(dataset_path,
+                               "original" if use_original else "images",
+                               "train")
         train_images = [os.path.join(img_dir, p) for p in os.listdir(img_dir)]
 
+    labels = get_csv(dataset_path, name="train")
+
     if test_size is not None:
-        datasets["train"], datasets["valid"] = \
-            train_test_split(train_images, test_size=test_size,
-                             random_state=SEED, shuffle=True)
+        if stratified:
+            subsets = get_csv(dataset_path, name="train_val")
+
+            if use_parquet:
+                merged = pd.merge(labels, subsets, on="image_id")
+                datasets["train"] = merged.loc[merged['subset'] == "train"]
+                datasets["valid"] = merged.loc[merged['subset'] == "valid"]
+            else:
+                img_dir = os.path.join(dataset_path,
+                                       "original" if use_original else "images",
+                                       "train")
+                train = subsets.loc[subsets['subset'] == "train"]
+                valid = subsets.loc[subsets['subset'] == "valid"]
+
+                datasets["train"] = [os.path.join(img_dir, p["image_id"] + ".jpeg")
+                                     for i, p in train.iterrows()]
+                datasets["valid"] = [os.path.join(img_dir, p["image_id"] + ".jpeg")
+                                     for i, p in valid.iterrows()]
+            # splitter = MultilabelStratifiedShuffleSplit(n_splits=1,
+            #                                             test_size=test_size,
+            #                                             random_state=SEED)
+            # for train_indcs, valid_indcs in splitter.split(
+            #         X=train_images, y=labels[INPUT_KEYS].values):
+            #     datasets["train"], datasets["valid"] = \
+            #         [train_images[i] for i in train_indcs], \
+            #         [train_images[i] for i in valid_indcs]
+            #
+            # del splitter
+        else:
+            datasets["train"], datasets["valid"] = \
+                train_test_split(train_images, test_size=test_size,
+                                 random_state=SEED, shuffle=True)
+
     else:
         datasets["train"] = train_images
-
-    labels = get_csv(dataset_path, name="train")
 
     for key, dataset in datasets.items():
         datasets[key] = BengaliDataset(dataset, labels,
                                        transforms=transforms[key],
                                        target_to_use=target_to_use,
-                                       use_parquet=use_parquet)
+                                       use_original=use_original,
+                                       use_parquet=use_parquet,
+                                       to_one_hot=to_one_hot)
     del train_images, labels, transforms
     return datasets
 
@@ -290,16 +301,23 @@ def get_loaders(
         test_size=None,
         target_to_use=None,
         test_only=False,
+        use_original=False,
         use_parquet=False,
         files_to_load=None,
+        to_one_hot=False,
 ):
+    if target_to_use is None:
+        target_to_use = [0, 1, 2]
+
     datasets = get_datasets(dataset_path=dataset_path,
                             transforms=transforms,
                             target_to_use=target_to_use,
                             test_size=test_size,
                             test_only=test_only,
+                            use_original=use_original,
                             use_parquet=use_parquet,
-                            files_to_load=files_to_load)
+                            files_to_load=files_to_load,
+                            to_one_hot=to_one_hot)
 
     loaders = collections.OrderedDict()
 

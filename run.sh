@@ -1,1 +1,0 @@
-CUDA_VISIBLE_DEVICES= catalyst-dl run --config=./configs/_efficientnet.yml --verbose

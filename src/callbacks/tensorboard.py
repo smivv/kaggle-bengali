@@ -4,7 +4,7 @@ import torch
 import torchvision.utils
 
 from catalyst.dl import Callback, CallbackOrder, State
-from catalyst.utils.tensorboard import SummaryWriter
+from catalyst.utils.tools.tensorboard import SummaryWriter
 
 
 class VisualizationCallback(Callback):
@@ -17,7 +17,7 @@ class VisualizationCallback(Callback):
         batch_frequency=25,
         concat_images=True,
         max_images=20,
-        num_rows=1,
+        num_rows=5,
         denorm="default"
     ):
         super().__init__(CallbackOrder.Other)
@@ -57,7 +57,10 @@ class VisualizationCallback(Callback):
         self.max_images = max_images
         if denorm.lower() == "default":
             # normalization from [-1, 1] to [0, 1] (the latter is valid for tb)
-            self.denorm = lambda x: x / 2 + .5
+            self.denorm = lambda x: x * 2 + .5
+        elif denorm.lower() == "bengali":
+            # normalization from [-1, 1] to [0, 1] (the latter is valid for tb)
+            self.denorm = lambda x: x * 0.2051 + 0.0692
         elif denorm is None or denorm.lower() == "none":
             self.denorm = lambda x: x
         else:
