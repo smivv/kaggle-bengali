@@ -6,11 +6,12 @@ import numpy as np
 import pandas as pd
 
 from torch.utils.data import Dataset, DataLoader
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, StratifiedShuffleSplit
 from iterstrat.ml_stratifiers import MultilabelStratifiedShuffleSplit
 
 IMAGE_HEIGHT = 137
 IMAGE_WIDTH = 236
+
 IMAGE_SIZE = 128
 
 SEED = 69
@@ -38,8 +39,8 @@ GRAPHEME_OUTPUT_KEY = "grapheme_root_pred"
 VOWEL_OUTPUT_KEY = "vowel_diacritic_pred"
 CONSONANT_OUTPUT_KEY = 'consonant_diacritic_pred'
 
-INPUT_KEYS = (GRAPHEME_INPUT_KEY, VOWEL_INPUT_KEY, CONSONANT_INPUT_KEY)
-OUTPUT_KEYS = (GRAPHEME_OUTPUT_KEY, VOWEL_OUTPUT_KEY, CONSONANT_OUTPUT_KEY)
+INPUT_KEYS = [GRAPHEME_INPUT_KEY, VOWEL_INPUT_KEY, CONSONANT_INPUT_KEY]
+OUTPUT_KEYS = [GRAPHEME_OUTPUT_KEY, VOWEL_OUTPUT_KEY, CONSONANT_OUTPUT_KEY]
 
 NUM_CLASSES = [168, 11, 7]
 
@@ -208,7 +209,7 @@ def get_datasets(
         use_parquet=False,
         files_to_load=None,
         to_one_hot=False,
-        stratified=False
+        stratification="sklearn_stratified"
 ):
     datasets = collections.OrderedDict()
 
@@ -245,39 +246,41 @@ def get_datasets(
     labels = get_csv(dataset_path, name="train")
 
     if test_size is not None:
-        if stratified:
-            subsets = get_csv(dataset_path, name="train_val")
+        if stratification == "sklearn_random":
+            print("Using train_test_split...")
 
-            if use_parquet:
-                merged = pd.merge(labels, subsets, on="image_id")
-                datasets["train"] = merged.loc[merged['subset'] == "train"]
-                datasets["valid"] = merged.loc[merged['subset'] == "valid"]
-            else:
-                img_dir = os.path.join(dataset_path,
-                                       "original" if use_original else "images",
-                                       "train")
-                train = subsets.loc[subsets['subset'] == "train"]
-                valid = subsets.loc[subsets['subset'] == "valid"]
-
-                datasets["train"] = [os.path.join(img_dir, p["image_id"] + ".jpeg")
-                                     for i, p in train.iterrows()]
-                datasets["valid"] = [os.path.join(img_dir, p["image_id"] + ".jpeg")
-                                     for i, p in valid.iterrows()]
-            # splitter = MultilabelStratifiedShuffleSplit(n_splits=1,
-            #                                             test_size=test_size,
-            #                                             random_state=SEED)
-            # for train_indcs, valid_indcs in splitter.split(
-            #         X=train_images, y=labels[INPUT_KEYS].values):
-            #     datasets["train"], datasets["valid"] = \
-            #         [train_images[i] for i in train_indcs], \
-            #         [train_images[i] for i in valid_indcs]
-            #
-            # del splitter
-        else:
             datasets["train"], datasets["valid"] = \
-                train_test_split(train_images, test_size=test_size,
-                                 random_state=SEED, shuffle=True)
+                train_test_split(train_images,
+                                 test_size=test_size,
+                                 random_state=SEED,
+                                 shuffle=True)
 
+        elif stratification == "sklearn_stratified":
+            print("Using StratifiedShuffleSplit...")
+
+            splitter = StratifiedShuffleSplit(n_splits=1,
+                                              test_size=test_size,
+                                              random_state=SEED)
+            for train_indcs, valid_indcs in splitter.split(
+                    X=train_images, y=labels[INPUT_KEYS].values):
+                datasets["train"], datasets["valid"] = \
+                    [train_images[i] for i in train_indcs], \
+                    [train_images[i] for i in valid_indcs]
+
+        elif stratification == "iterstrat":
+
+            splitter = MultilabelStratifiedShuffleSplit(n_splits=1,
+                                                        test_size=test_size,
+                                                        random_state=SEED)
+            for train_indcs, valid_indcs in splitter.split(
+                    X=train_images, y=labels[INPUT_KEYS].values):
+                datasets["train"], datasets["valid"] = \
+                    [train_images[i] for i in train_indcs], \
+                    [train_images[i] for i in valid_indcs]
+
+        else:
+            raise NotImplementedError(
+                f"{stratification} method not implemented")
     else:
         datasets["train"] = train_images
 
@@ -305,6 +308,7 @@ def get_loaders(
         use_parquet=False,
         files_to_load=None,
         to_one_hot=False,
+        stratification="sklearn_stratified"
 ):
     if target_to_use is None:
         target_to_use = [0, 1, 2]
@@ -317,7 +321,8 @@ def get_loaders(
                             use_original=use_original,
                             use_parquet=use_parquet,
                             files_to_load=files_to_load,
-                            to_one_hot=to_one_hot)
+                            to_one_hot=to_one_hot,
+                            stratification=stratification)
 
     loaders = collections.OrderedDict()
 
@@ -340,3 +345,22 @@ def get_num_classes(dataset_path):
 def get_filter(dataset_path):
     return get_csv(dataset_path, name="train") \
         .groupby(INPUT_KEYS).size().reset_index().rename(columns={0: 'size'})
+
+
+def check_stratification(train, valid):
+    train_count, val_count = get_filter(train), get_filter(valid)
+
+    total = train_count["size"] + val_count["size"]
+    train_part = train_count["size"] / total
+    val_part = val_count["size"] / total
+    relative = val_part / train_part
+
+    for k, v in {"Train": train_part, "Valid": val_part,
+                 "Valid relative to train": relative}.items():
+        print("---------------------------------------------------------------")
+        print(k)
+        print(v)
+        print(",".join([f"{m}: {f(v):.2}"
+                        for m, f in {"min": np.min, "max": np.max,
+                                     "mean": np.mean, "std": np.std}.items()]))
+        print("---------------------------------------------------------------")

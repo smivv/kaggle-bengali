@@ -17,8 +17,7 @@ class ModelRunner(Runner):
                  model=None,
                  device=None,
                  input_key=IMAGE_KEY,
-                 output_key=None,
-                 # output_key=tuple(OUTPUT_KEYS),
+                 output_key=OUTPUT_KEYS,
                  input_target_key=INPUT_KEYS):
         super().__init__(
             model=model,

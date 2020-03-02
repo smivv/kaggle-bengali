@@ -52,7 +52,7 @@ class Experiment(ConfigExperiment):
         use_parquet: bool = False,
         files_to_load: List = None,
         to_one_hot: bool = False,
-        stratified: bool = False,
+        stratification: str = "sklearn_stratified",
     ):
         return get_datasets(
             dataset_path=dataset_path,
@@ -65,5 +65,5 @@ class Experiment(ConfigExperiment):
             use_parquet=use_parquet,
             files_to_load=files_to_load,
             to_one_hot=to_one_hot,
-            stratified=stratified,
+            stratification=stratification,
         )

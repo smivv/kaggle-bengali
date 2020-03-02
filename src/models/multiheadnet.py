@@ -44,7 +44,8 @@ class MultiHeadNet(nn.Module):
 
         # Pooling and final linear layer
         x = self.backbone._adapt_avg_pooling(x)
-        features = self.backbone._dropout(x.view(bs, -1))
+        features = x.view(bs, -1)
+        # features = self.backbone._dropout(x.view(bs, -1))
 
         embeddings = self.neck(features) if self.neck is not None else features
 
@@ -56,7 +57,9 @@ class MultiHeadNet(nn.Module):
         for key, head in self.heads.items():
             result[key] = head(embeddings)
 
-        return result
+        return result[GRAPHEME_OUTPUT_KEY], \
+               result[VOWEL_OUTPUT_KEY], \
+               result[CONSONANT_OUTPUT_KEY]
 
     @classmethod
     def get_from_params(
@@ -149,7 +152,6 @@ class MultiHeadNet(nn.Module):
                 #     padding=1,
                 #     bias=True,
                 # )
-
             enc_size = backbone.last_linear.in_features
 
         elif backbone_params_["model_name"].startswith("efficientnet"):

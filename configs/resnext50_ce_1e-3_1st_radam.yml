@@ -1,9 +1,11 @@
 GLOBALS:
   image_key: &image_key "image"
-  image_height: &image_height 128 # 137
-  image_width: &image_width 128 # 236
-#  image_height: &image_height 137
-#  image_width: &image_width 236
+  image_height: &image_height 137
+  image_width: &image_width 236
+#  image_height: &image_height 128
+#  image_width: &image_width 128
+  embedding_size: &embedding_size 256
+  head_size: &head_size 512
   features_key: &features_key "features"
   embeddings_key: &embeddings_key "embeddings"
   grapheme_input_key: &grapheme_input_key "grapheme_root"
@@ -15,11 +17,12 @@ GLOBALS:
   grapheme_num_classes: &grapheme_num_classes 168
   vowel_num_classes: &vowel_num_classes 11
   consonant_num_classes: &consonant_num_classes 7
-  embedding_size: &embedding_size 256
+
   model_name: &model_name "se_resnext50_32x4d"
-  logdir: &logdir "./logs/se_resnext50_32x4d_radaml_onplateu_stratified"
+  logdir: &logdir "./logs/se_resnext50_32x4d_5e-3_radaml_onplateu_strat"
 #  model_name: &model_name "efficientnet-b4"
 #  logdir: &logdir "./logs/efficientnet-b4_radaml_onplateu_baseline"
+
   MAIN_METRIC: &MAIN_METRIC "_total_recall"
 
   train_size: 160672
@@ -83,7 +86,7 @@ SCHEDULERS:
     milestones: [20, 40, 70]
     gamma: 0.5
 
-################################################################################
+#################################### MODEL #####################################
 
 model_params:
   model: MultiHeadNet
@@ -94,7 +97,7 @@ model_params:
     in_channels: 1
 
 #  neck_params:
-#    hiddens: [512]
+#    hiddens: [*embedding_size]
 #    layer_fn: {"module": "Linear", "bias": False}
 #    norm_fn: BatchNorm1d
 #    activation_fn: ReLU
@@ -104,31 +107,47 @@ model_params:
   heads_params:
     *grapheme_output_key:
       hiddens: [
-#        *embedding_size,
+#        *head_size,
         *grapheme_num_classes
       ]
       layer_fn: [
         {"module": Linear, "bias": True},
-#        {"module": ArcFaceProduct}
+#        {"module": Linear, "bias": True},
+#        {"module": ArcFaceProduct},
       ]
+#      norm_fn: [BatchNorm1d, null]
+#      activation_fn: [ReLU, null]
+#      dropout_fn: [{"module": "Dropout", p: 0.3}, null]
+
     *vowel_output_key:
       hiddens: [
-#        *embedding_size,
+#        *head_size,
         *vowel_num_classes
       ]
       layer_fn: [
         {"module": Linear, "bias": True},
-#        {"module": ArcFaceProduct}
+#        {"module": Linear, "bias": True},
+#        {"module": ArcFaceProduct},
       ]
+#      norm_fn: [BatchNorm1d, null]
+#      activation_fn: [ReLU, null]
+#      dropout_fn: [{"module": "Dropout", p: 0.3}, null]
+
     *consonant_output_key:
       hiddens: [
-#        *embedding_size,
+#        *head_size,
         *consonant_num_classes
       ]
       layer_fn: [
         {"module": Linear, "bias": True},
-#        {"module": ArcFaceProduct}
+#        {"module": Linear, "bias": True},
+#        {"module": ArcFaceProduct},
       ]
+#      norm_fn: [BatchNorm1d, null]
+#      activation_fn: [ReLU, null]
+#      dropout_fn: [{"module": "Dropout", p: 0.3}, null]
+
+##################################### ARGS #####################################
 
 args:
   expdir: "./src/"
@@ -152,6 +171,8 @@ args:
 #  syncbn: True  # KEYWORD, whether to convert BatchNorm to SyncBatchNorm (Default is False)
 #  # This level may contain other parameters for the initialization of NVIDIA Apex
 
+#################################### STAGES ####################################
+
 stages:
   data_params:
     dataset_path: "/workspace/Datasets/BENGALI"
@@ -160,13 +181,14 @@ stages:
     image_width: *image_width
     test_size: 0.1
     test_only: False
-    use_original: False
+    use_original: True
     use_parquet: False
-    files_to_load: None
+    files_to_load: null
     to_one_hot: False
-    stratified: True
+#    stratification: "sklearn_random"
+    stratification: "sklearn_stratified"
 
-    batch_size: 256
+    batch_size: 200
     num_workers: 8
 
   criterion_params:
@@ -367,12 +389,12 @@ stages:
       concat_images: True
       denorm: "bengali"
 
-#    telegram_callback:
-#      callback: TelegramLogger
-#      chat_id: 131088733
-#      token: 1084707165:AAEK5aqWNJ6ov7LQP4xXWBHB5dJ3LB0rmdY
-#      metric_names: ["recall_grapheme01", "recall_vowel01", "recall_consonant01",
-#                     "acc_grapheme01", "acc_vowel01", "acc_consonant01",
-#                     "_base/lr", "_timers/fps", "_timers/batch_time",
-#                     "_timers/data_time", "_timers/model_time",
-#                     "_total_accuracy", "_total_recall", ]
+    telegram_callback:
+      callback: TelegramLogger
+      chat_id: 131088733
+      token: 1084707165:AAEK5aqWNJ6ov7LQP4xXWBHB5dJ3LB0rmdY
+      metric_names: ["recall_grapheme01", "recall_vowel01", "recall_consonant01",
+                     "acc_grapheme01", "acc_vowel01", "acc_consonant01",
+                     "_base/lr", "_timers/fps", "_timers/batch_time",
+                     "_timers/data_time", "_timers/model_time",
+                     "_total_accuracy", "_total_recall", ]

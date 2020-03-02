@@ -13,7 +13,8 @@ from src.models.multiheadnet import MultiHeadNet
 from src.transforms.bengali import get_transforms
 from src.datasets.bengali import get_loaders, get_num_classes, INPUT_KEYS, \
     GRAPHEME_INPUT_KEY, VOWEL_INPUT_KEY, CONSONANT_INPUT_KEY, \
-    GRAPHEME_OUTPUT_KEY, VOWEL_OUTPUT_KEY, CONSONANT_OUTPUT_KEY, IMAGE_SIZE
+    GRAPHEME_OUTPUT_KEY, VOWEL_OUTPUT_KEY, CONSONANT_OUTPUT_KEY, \
+    IMAGE_HEIGHT, IMAGE_WIDTH
 
 
 def softmax(outputs, k=None):
@@ -49,12 +50,12 @@ def predict(models: list, image: torch.Tensor):
     outputs = None
     with torch.no_grad():
         for model in models:
-            output = model["model"](image)
+            g, v, c = model["model"](image)
 
             values = softmax({
-                GRAPHEME_INPUT_KEY: output[GRAPHEME_OUTPUT_KEY],
-                VOWEL_INPUT_KEY: output[VOWEL_OUTPUT_KEY],
-                CONSONANT_INPUT_KEY: output[CONSONANT_OUTPUT_KEY]
+                GRAPHEME_INPUT_KEY: g,
+                VOWEL_INPUT_KEY: v,
+                CONSONANT_INPUT_KEY: c
             })
 
             if outputs is None:
@@ -76,6 +77,7 @@ def predict(models: list, image: torch.Tensor):
     return values, labels
 
 
+JIT = True
 TARGET_TO_USE = [0, 1, 2]
 
 DATASET_PATH = "/workspace/Datasets/BENGALI/"
@@ -83,44 +85,44 @@ DATASET_PATH = "/workspace/Datasets/BENGALI/"
 
 num_classes = get_num_classes(DATASET_PATH)
 
-transforms = get_transforms(image_height=IMAGE_SIZE, image_width=IMAGE_SIZE)
+transforms = get_transforms(
+    image_height=IMAGE_HEIGHT,
+    image_width=IMAGE_WIDTH,
+)
 transforms["train"] = transforms["test"]
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 MODELS = [
     {
-        "ckpt": "/home/smirnvla/PycharmProjects/catalyst-classification/logs/se_resnext50_32x4d_radaml_onplateu_stratified/checkpoints/best_full.pth",
-        "config": "/home/smirnvla/PycharmProjects/catalyst-classification/logs/se_resnext50_32x4d_radaml_onplateu_stratified/configs/resnext50_ce_1e-3_1st_radam.yml",
-        "jit": "/home/smirnvla/PycharmProjects/catalyst-classification/logs/se_resnext50_32x4d_radaml_onplateu_stratified/trace/traced-best-forward.pth",
+        "ckpt": "/home/smirnvla/PycharmProjects/catalyst-classification/logs/se_resnext50_32x4d_5e-3_radaml_onplateu_strat_original_2lheads/checkpoints/best_full.pth",
+        "config": "/home/smirnvla/PycharmProjects/catalyst-classification/logs/se_resnext50_32x4d_5e-3_radaml_onplateu_strat_original_2lheads/configs/resnext50_ce_1e-3_1st_radam.yml",
+        "jit": "/home/smirnvla/PycharmProjects/catalyst-classification/logs/se_resnext50_32x4d_5e-3_radaml_onplateu_strat_original_cutmixup/trace/se_resnext50_32x4d_9802.pth"
     },
 ]
 
 for M in MODELS:
-    with open(M["config"], "r") as f:
-        config = load_ordered_yaml(f)
+    if JIT:
+        model = torch.jit.load(M["jit"], map_location=device)
+    else:
+        with open(M["config"], "r") as f:
+            config = load_ordered_yaml(f)
 
-        model = MultiHeadNet.get_from_params(
-            backbone_params=safitty.get(config, 'model_params', 'backbone_params'),
-            neck_params=safitty.get(config, 'model_params', 'neck_params'),
-            heads_params=safitty.get(config, 'model_params', 'heads_params')
-        )
+            model = MultiHeadNet.get_from_params(
+                backbone_params=safitty.get(config, 'model_params', 'backbone_params'),
+                neck_params=safitty.get(config, 'model_params', 'neck_params'),
+                heads_params=safitty.get(config, 'model_params', 'heads_params')
+            )
 
-        checkpoint = torch.load(M["ckpt"], map_location=device)
+            checkpoint = torch.load(M["ckpt"], map_location=device)
 
-        model.load_state_dict(checkpoint['model_state_dict'])
-        model.to(device)
-        model.eval()
+            model.load_state_dict(checkpoint['model_state_dict'])
 
-        M["model"] = model
+    model.to(device)
+    model.eval()
 
+    M["model"] = model
 
-# for M in MODELS:
-#     model = torch.jit.load(M["jit"], map_location=device)
-#     model.to(device)
-#     model.eval()
-#
-#     M["model"] = model
 
 row_id, timings = [], []
 
@@ -128,8 +130,6 @@ gt, target = [], []
 
 BATCH_SIZE = 32
 TEST_ONLY = False
-
-denorm = lambda x: (x * 0.2051 + 0.0692) * 255
 
 with torch.no_grad():
     for file_to_load in range(4):
@@ -143,6 +143,7 @@ with torch.no_grad():
                              target_to_use=TARGET_TO_USE,
                              test_only=TEST_ONLY,
                              use_parquet=False,
+                             use_original=True,
                              files_to_load=[file_to_load])[
             "test" if TEST_ONLY else "train"]
 
