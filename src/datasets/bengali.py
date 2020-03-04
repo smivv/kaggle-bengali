@@ -6,8 +6,9 @@ import numpy as np
 import pandas as pd
 
 from torch.utils.data import Dataset, DataLoader
-from sklearn.model_selection import train_test_split, StratifiedShuffleSplit
-from iterstrat.ml_stratifiers import MultilabelStratifiedShuffleSplit
+from sklearn.preprocessing import LabelEncoder, LabelBinarizer, MultiLabelBinarizer, OneHotEncoder
+from sklearn.model_selection import train_test_split, StratifiedShuffleSplit, StratifiedKFold
+# from iterstrat.ml_stratifiers import MultilabelStratifiedShuffleSplit
 
 IMAGE_HEIGHT = 137
 IMAGE_WIDTH = 236
@@ -46,6 +47,7 @@ NUM_CLASSES = [168, 11, 7]
 
 
 class BengaliDataset(Dataset):
+    PARQUET, NPY, JPEG = "parquet", "npy", "jpeg"
 
     def __init__(self,
                  images,
@@ -53,19 +55,24 @@ class BengaliDataset(Dataset):
                  transforms=None,
                  target_to_use=None,
                  use_original=False,
-                 use_parquet=False,
                  to_one_hot=False):
 
         self.images = images
 
-        if use_parquet:
+        if isinstance(images, pd.DataFrame):
+            self.load_from = BengaliDataset.PARQUET
             self.image_ids = self.images.iloc[:, 0].values
             self.images = self.images.iloc[:, 1:].values
+        elif len(images) > 0 and images[0].endswith(BengaliDataset.NPY):
+            self.load_from = BengaliDataset.NPY
+        elif len(images) > 0 and images[0].endswith(BengaliDataset.JPEG):
+            self.load_from = BengaliDataset.JPEG
+        else:
+            raise NotImplementedError("Something wrong with data format")
 
         self.labels = labels
         self.transforms = transforms
         self.use_original = use_original
-        self.use_parquet = use_parquet
         self.target_to_use = target_to_use
         self.to_one_hot = to_one_hot
 
@@ -126,17 +133,27 @@ class BengaliDataset(Dataset):
         return left, top, right, bottom
 
     def get_item(self, idx):
-        if self.use_parquet:
+        if self.load_from == BengaliDataset.PARQUET:
             image_id = self.image_ids[idx]
             image = 255 - self.images[idx].reshape(IMAGE_HEIGHT,
                                                    IMAGE_WIDTH).astype(np.uint8)
             image = (image * (255.0 / image.max())).astype(np.uint8)
             if not self.use_original:
                 image = BengaliDataset._crop_resize(image)
-        else:
+
+        elif self.load_from == BengaliDataset.NPY:
+            path = self.images[idx]
+            image_id = os.path.basename(path).split('.')[0]
+            image = np.load(path)
+
+        elif self.load_from == BengaliDataset.JPEG:
             path = self.images[idx]
             image_id = os.path.basename(path).split('.')[0]
             image = self._readimg(path)
+        else:
+            raise ValueError("Unknown type of data. "
+                             "`parquet`, `npy` or `jpeg` formats only!")
+
         image = image[..., np.newaxis]
 
         result = {
@@ -178,7 +195,7 @@ def get_feather_paths(dataset_path, name, files_to_load=None):
             for i in files_to_load]
 
 
-def get_data(dataset_path, name, files_to_load=None):
+def get_dataframe(dataset_path, name, files_to_load=None):
     if LOAD_FROM_PARQUETS:
         paths = get_parquet_paths(dataset_path, name, files_to_load)
         if len(paths) == 1:
@@ -195,6 +212,21 @@ def get_data(dataset_path, name, files_to_load=None):
                              ignore_index=True)
 
 
+def get_data(dataset_path,
+             labels,
+             subset,
+             load_from,
+             files_to_load):
+    if load_from == BengaliDataset.PARQUET:
+        data = get_dataframe(dataset_path, subset, files_to_load)
+    elif load_from == BengaliDataset.NPY or load_from == BengaliDataset.JPEG:
+        data = labels["image_id"].values
+    else:
+        raise ValueError("Unknown type of data. "
+                         "`parquet`, `npy` or `jpeg` formats only!")
+    return data
+
+
 def get_csv(dataset_path, name):
     return pd.read_csv(os.path.join(dataset_path, f"{name}.csv"))
 
@@ -206,92 +238,111 @@ def get_datasets(
         test_size=None,
         test_only=False,
         use_original=False,
-        use_parquet=False,
+        load_from=None,
         files_to_load=None,
         to_one_hot=False,
-        stratification="sklearn_stratified"
+        stratification="sklearn_stratified",
+        num_folds=None,
+        fold=None
 ):
     datasets = collections.OrderedDict()
+
+    labels = get_csv(dataset_path, name="test" if test_only else "train")
 
     if transforms is None:
         transforms = {"train": None, "valid": None, "test": None}
 
     if test_only:
-        if use_parquet:
-            test_images = get_data(dataset_path, "test", files_to_load)
-        else:
-            img_dir = os.path.join(dataset_path,
-                                   "original" if use_original else "images",
-                                   "test")
-            test_images = [os.path.join(img_dir, p)
-                           for p in os.listdir(img_dir)]
-
-        datasets["test"] = BengaliDataset(test_images,
-                                          transforms=transforms["test"],
-                                          target_to_use=target_to_use,
-                                          use_original=use_original,
-                                          use_parquet=use_parquet,
-                                          to_one_hot=to_one_hot)
-        del test_images, transforms
-        return datasets
-
-    if use_parquet:
-        train_images = get_data(dataset_path, "train", files_to_load)
+        datasets["test"] = get_data(dataset_path=dataset_path,
+                                    labels=labels,
+                                    subset="test",
+                                    load_from=load_from,
+                                    files_to_load=files_to_load)
     else:
-        img_dir = os.path.join(dataset_path,
-                               "original" if use_original else "images",
-                               "train")
-        train_images = [os.path.join(img_dir, p) for p in os.listdir(img_dir)]
+        labels['label'] = labels[INPUT_KEYS].apply(tuple, axis=1)
+        labels['label'] = pd.factorize(labels['label'])[0] + 1
 
-    labels = get_csv(dataset_path, name="train")
+        images = get_data(dataset_path=dataset_path,
+                          labels=labels,
+                          subset="train",
+                          load_from=load_from,
+                          files_to_load=files_to_load)
 
-    if test_size is not None:
-        if stratification == "sklearn_random":
-            print("Using train_test_split...")
+        if test_size is not None:
+            if stratification == "sklearn_random":
+                print("Using train_test_split...")
 
-            datasets["train"], datasets["valid"] = \
-                train_test_split(train_images,
-                                 test_size=test_size,
-                                 random_state=SEED,
-                                 shuffle=True)
-
-        elif stratification == "sklearn_stratified":
-            print("Using StratifiedShuffleSplit...")
-
-            splitter = StratifiedShuffleSplit(n_splits=1,
-                                              test_size=test_size,
-                                              random_state=SEED)
-            for train_indcs, valid_indcs in splitter.split(
-                    X=train_images, y=labels[INPUT_KEYS].values):
                 datasets["train"], datasets["valid"] = \
-                    [train_images[i] for i in train_indcs], \
-                    [train_images[i] for i in valid_indcs]
+                    train_test_split(images,
+                                     test_size=test_size,
+                                     random_state=SEED,
+                                     shuffle=True)
 
-        elif stratification == "iterstrat":
+            elif stratification == "sklearn_stratified":
+                if fold is None:
+                    print("Using StratifiedShuffleSplit...")
 
-            splitter = MultilabelStratifiedShuffleSplit(n_splits=1,
-                                                        test_size=test_size,
-                                                        random_state=SEED)
-            for train_indcs, valid_indcs in splitter.split(
-                    X=train_images, y=labels[INPUT_KEYS].values):
-                datasets["train"], datasets["valid"] = \
-                    [train_images[i] for i in train_indcs], \
-                    [train_images[i] for i in valid_indcs]
+                    splitter = StratifiedShuffleSplit(n_splits=1,
+                                                      test_size=test_size,
+                                                      random_state=SEED)
+                    train_indcs, valid_indcs = next(splitter.split(
+                        X=images, y=labels[INPUT_KEYS].values))
 
+                    datasets["train"], datasets["valid"] = \
+                        images[train_indcs], images[valid_indcs]
+                elif isinstance(num_folds, int) and isinstance(fold, int):
+                    print("Using StratifiedKFold...")
+
+                    splitter = StratifiedKFold(n_splits=num_folds,
+                                               shuffle=True,
+                                               random_state=SEED)
+                    for i, (train_indcs, valid_indcs) in enumerate(
+                            splitter.split(X=images, y=labels['label'].values)):
+                        if i == fold:
+                            datasets["train"], datasets["valid"] = \
+                                images[train_indcs], images[valid_indcs]
+                            break
+                else:
+                    raise NotImplementedError("Folding not implemented yet.")
+
+            # elif stratification == "iterstrat":
+            #
+            #     splitter = MultilabelStratifiedShuffleSplit(n_splits=1,
+            #                                                 test_size=test_size,
+            #                                                 random_state=SEED)
+            #     train_indcs, valid_indcs = next(splitter.split(
+            #         X=images, y=labels[INPUT_KEYS].values))
+            #
+            #     datasets["train"], datasets["valid"] = \
+            #         images[train_indcs], images[valid_indcs]
+            #
+            else:
+                raise NotImplementedError(
+                    f"{stratification} method not implemented")
         else:
-            raise NotImplementedError(
-                f"{stratification} method not implemented")
+            datasets["train"] = images
+
+    if load_from != BengaliDataset.PARQUET and use_original:
+        img_dir = "original_npy" \
+            if load_from == BengaliDataset.NPY else "original"
     else:
-        datasets["train"] = train_images
+        if load_from == BengaliDataset.NPY:
+            raise NotImplementedError("Combination of not original images "
+                                      "and npy format is not implemented yet.")
+        else:
+            img_dir = "images"
 
     for key, dataset in datasets.items():
-        datasets[key] = BengaliDataset(dataset, labels,
+        if load_from != BengaliDataset.PARQUET:
+            dataset = [os.path.join(dataset_path, img_dir, key,
+                                    f"{i}.{load_from}") for i in dataset]
+
+        datasets[key] = BengaliDataset(dataset,
+                                       None if key == "test" else labels,
                                        transforms=transforms[key],
                                        target_to_use=target_to_use,
                                        use_original=use_original,
-                                       use_parquet=use_parquet,
                                        to_one_hot=to_one_hot)
-    del train_images, labels, transforms
     return datasets
 
 
@@ -305,7 +356,7 @@ def get_loaders(
         target_to_use=None,
         test_only=False,
         use_original=False,
-        use_parquet=False,
+        load_from=None,
         files_to_load=None,
         to_one_hot=False,
         stratification="sklearn_stratified"
@@ -319,7 +370,7 @@ def get_loaders(
                             test_size=test_size,
                             test_only=test_only,
                             use_original=use_original,
-                            use_parquet=use_parquet,
+                            load_from=load_from,
                             files_to_load=files_to_load,
                             to_one_hot=to_one_hot,
                             stratification=stratification)
@@ -342,12 +393,21 @@ def get_num_classes(dataset_path):
     return [len(df.loc[df['component_type'] == k]) for k in INPUT_KEYS]
 
 
+def count(df):
+    return df.groupby(INPUT_KEYS).size().reset_index().rename(
+        columns={0: "size"})
+
+
 def get_filter(dataset_path):
-    return get_csv(dataset_path, name="train") \
-        .groupby(INPUT_KEYS).size().reset_index().rename(columns={0: 'size'})
+    return count(get_csv(dataset_path, name="train"))
 
 
-def check_stratification(train, valid):
+def check_stratification(train, valid, df=None):
+    if not isinstance(train, pd.DataFrame) or \
+            not isinstance(valid, pd.DataFrame):
+        train = [os.path.basename(t).split(".")[0] for t in train]
+        valid = [os.path.basename(v).split(".")[0] for v in valid]
+
     train_count, val_count = get_filter(train), get_filter(valid)
 
     total = train_count["size"] + val_count["size"]

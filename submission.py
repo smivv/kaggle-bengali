@@ -95,17 +95,15 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 MODELS = [
     {
-        "ckpt": "/home/smirnvla/PycharmProjects/catalyst-classification/logs/se_resnext50_32x4d_5e-3_radaml_onplateu_strat_original_2lheads/checkpoints/best_full.pth",
-        "config": "/home/smirnvla/PycharmProjects/catalyst-classification/logs/se_resnext50_32x4d_5e-3_radaml_onplateu_strat_original_2lheads/configs/resnext50_ce_1e-3_1st_radam.yml",
-        "jit": "/home/smirnvla/PycharmProjects/catalyst-classification/logs/se_resnext50_32x4d_5e-3_radaml_onplateu_strat_original_cutmixup/trace/se_resnext50_32x4d_9802.pth"
+        "path": "/home/smirnvla/PycharmProjects/catalyst-classification/logs/se_resnext50_32x4d_5e-3_radaml_onplateu_strat_aug_neck_2lheads/trace/se_resnext50_32x4d_9806",
     },
 ]
 
 for M in MODELS:
     if JIT:
-        model = torch.jit.load(M["jit"], map_location=device)
+        model = torch.jit.load(M["path"] + ".jit", map_location=device)
     else:
-        with open(M["config"], "r") as f:
+        with open(M["path"] + ".yml", "r") as f:
             config = load_ordered_yaml(f)
 
             model = MultiHeadNet.get_from_params(
@@ -114,7 +112,7 @@ for M in MODELS:
                 heads_params=safitty.get(config, 'model_params', 'heads_params')
             )
 
-            checkpoint = torch.load(M["ckpt"], map_location=device)
+            checkpoint = torch.load(M["path"] + ".pth", map_location=device)
 
             model.load_state_dict(checkpoint['model_state_dict'])
 
@@ -142,7 +140,7 @@ with torch.no_grad():
                              num_workers=4,
                              target_to_use=TARGET_TO_USE,
                              test_only=TEST_ONLY,
-                             use_parquet=False,
+                             load_from="parquet",
                              use_original=True,
                              files_to_load=[file_to_load])[
             "test" if TEST_ONLY else "train"]

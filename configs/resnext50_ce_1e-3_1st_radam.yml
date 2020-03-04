@@ -4,7 +4,7 @@ GLOBALS:
   image_width: &image_width 236
 #  image_height: &image_height 128
 #  image_width: &image_width 128
-  embedding_size: &embedding_size 256
+  embedding_size: &embedding_size 1024
   head_size: &head_size 512
   features_key: &features_key "features"
   embeddings_key: &embeddings_key "embeddings"
@@ -19,11 +19,12 @@ GLOBALS:
   consonant_num_classes: &consonant_num_classes 7
 
   model_name: &model_name "se_resnext50_32x4d"
-  logdir: &logdir "./logs/se_resnext50_32x4d_5e-3_radaml_onplateu_strat"
+  logdir: &logdir "./logs/se_resnext50_32x4d_5e-3_radaml_onplateu_strat_aug_neck_2lheads_cutmixup"
 #  model_name: &model_name "efficientnet-b4"
 #  logdir: &logdir "./logs/efficientnet-b4_radaml_onplateu_baseline"
 
   MAIN_METRIC: &MAIN_METRIC "_total_recall"
+  REDUCE_METRIC: &REDUCE_METRIC "loss"
 
   train_size: 160672
   num_epochs: &num_epochs 200
@@ -81,6 +82,12 @@ SCHEDULERS:
     patience: 5
     threshold: 0.00001
 
+  lr_on_plateu_cutmixup: &lr_on_plateu_cutmixup
+    scheduler: ReduceLROnPlateau
+    factor: 0.5
+    patience: 10
+    threshold: 0.00001
+
   multi_step_scheduler: &multi_step_scheduler
     scheduler: MultiStepLR
     milestones: [20, 40, 70]
@@ -96,56 +103,56 @@ model_params:
     requires_grad: True
     in_channels: 1
 
-#  neck_params:
-#    hiddens: [*embedding_size]
-#    layer_fn: {"module": "Linear", "bias": False}
-#    norm_fn: BatchNorm1d
-#    activation_fn: ReLU
+  neck_params:
+    hiddens: [*embedding_size]
+    layer_fn: {"module": "Linear", "bias": True}
+    norm_fn: BatchNorm1d
+    activation_fn: ReLU
 #    dropout_fn: Dropout
 #    residual: "soft"
 
   heads_params:
     *grapheme_output_key:
       hiddens: [
-#        *head_size,
+        *head_size,
         *grapheme_num_classes
       ]
       layer_fn: [
         {"module": Linear, "bias": True},
-#        {"module": Linear, "bias": True},
+        {"module": Linear, "bias": True},
 #        {"module": ArcFaceProduct},
       ]
-#      norm_fn: [BatchNorm1d, null]
-#      activation_fn: [ReLU, null]
-#      dropout_fn: [{"module": "Dropout", p: 0.3}, null]
+      norm_fn: [BatchNorm1d, null]
+      activation_fn: [ReLU, null]
+      dropout_fn: [{"module": "Dropout", p: 0.3}, null]
 
     *vowel_output_key:
       hiddens: [
-#        *head_size,
+        *head_size,
         *vowel_num_classes
       ]
       layer_fn: [
         {"module": Linear, "bias": True},
-#        {"module": Linear, "bias": True},
+        {"module": Linear, "bias": True},
 #        {"module": ArcFaceProduct},
       ]
-#      norm_fn: [BatchNorm1d, null]
-#      activation_fn: [ReLU, null]
-#      dropout_fn: [{"module": "Dropout", p: 0.3}, null]
+      norm_fn: [BatchNorm1d, null]
+      activation_fn: [ReLU, null]
+      dropout_fn: [{"module": "Dropout", p: 0.3}, null]
 
     *consonant_output_key:
       hiddens: [
-#        *head_size,
+        *head_size,
         *consonant_num_classes
       ]
       layer_fn: [
         {"module": Linear, "bias": True},
-#        {"module": Linear, "bias": True},
+        {"module": Linear, "bias": True},
 #        {"module": ArcFaceProduct},
       ]
-#      norm_fn: [BatchNorm1d, null]
-#      activation_fn: [ReLU, null]
-#      dropout_fn: [{"module": "Dropout", p: 0.3}, null]
+      norm_fn: [BatchNorm1d, null]
+      activation_fn: [ReLU, null]
+      dropout_fn: [{"module": "Dropout", p: 0.3}, null]
 
 ##################################### ARGS #####################################
 
@@ -182,11 +189,14 @@ stages:
     test_size: 0.1
     test_only: False
     use_original: True
-    use_parquet: False
+    load_from: "jpeg"
     files_to_load: null
     to_one_hot: False
 #    stratification: "sklearn_random"
     stratification: "sklearn_stratified"
+
+#    num_folds: 10
+#    fold: 0
 
     batch_size: 200
     num_workers: 8
@@ -241,42 +251,42 @@ stages:
       callback: OptimizerCallback
     scheduler:
       callback: SchedulerCallback
-      reduce_metric: *MAIN_METRIC
+      reduce_metric: *REDUCE_METRIC
     saver:
       callback: CheckpointCallback
 
 ################################## CutmixCallback ##############################
 
-#    grapheme_ce_criterion_callback:
-#      callback: CutMixUpCallback
-#      fields: [*image_key]
-#      input_key: [*grapheme_input_key, *vowel_input_key, *consonant_input_key]
-#      output_key: [*grapheme_output_key, *vowel_output_key, *consonant_output_key]
-#      method: "both"
-#      criterion_key: "ce"
-#      prefix: &cutmix_ce_loss_prefix "loss_ce"
-#      weights: [*w1, *w2, *w3]
+    grapheme_ce_criterion_callback:
+      callback: CutMixUpCallback
+      fields: [*image_key]
+      input_key: [*grapheme_input_key, *vowel_input_key, *consonant_input_key]
+      output_key: [*grapheme_output_key, *vowel_output_key, *consonant_output_key]
+      method: "both"
+      criterion_key: "ce"
+      prefix: &cutmix_ce_loss_prefix "loss_ce"
+      weights: [*w1, *w2, *w3]
 
 ################################ CriterionCallback #############################
 
-    grapheme_ce_criterion_callback:
-      callback: CriterionCallback
-      input_key: *grapheme_input_key
-      output_key: *grapheme_output_key
-      criterion_key: "ce"
-      prefix: &grapheme_ce_loss_prefix "loss_ce_grapheme_root"
-    vowel_ce_criterion_callback:
-      callback: CriterionCallback
-      input_key: *vowel_input_key
-      output_key: *vowel_output_key
-      criterion_key: "ce"
-      prefix: &vowel_ce_loss_prefix "loss_ce_vowel_diacritic"
-    consonant_ce_criterion_callback:
-      callback: CriterionCallback
-      input_key: *consonant_input_key
-      output_key: *consonant_output_key
-      criterion_key: "ce"
-      prefix: &consonant_ce_loss_prefix "loss_ce_consonant_diacritic"
+#    grapheme_ce_criterion_callback:
+#      callback: CriterionCallback
+#      input_key: *grapheme_input_key
+#      output_key: *grapheme_output_key
+#      criterion_key: "ce"
+#      prefix: &grapheme_ce_loss_prefix "loss_ce_grapheme_root"
+#    vowel_ce_criterion_callback:
+#      callback: CriterionCallback
+#      input_key: *vowel_input_key
+#      output_key: *vowel_output_key
+#      criterion_key: "ce"
+#      prefix: &vowel_ce_loss_prefix "loss_ce_vowel_diacritic"
+#    consonant_ce_criterion_callback:
+#      callback: CriterionCallback
+#      input_key: *consonant_input_key
+#      output_key: *consonant_output_key
+#      criterion_key: "ce"
+#      prefix: &consonant_ce_loss_prefix "loss_ce_consonant_diacritic"
 
 #    grapheme_fl_criterion_callback:
 #      callback: CriterionCallback
@@ -340,8 +350,8 @@ stages:
       prefix: "loss"
       loss_aggregate_fn: "weighted_sum"
       loss_keys: {
-#        *cutmix_ce_loss_prefix: 1.0
-        *grapheme_ce_loss_prefix: *w1, *vowel_ce_loss_prefix: *w2, *consonant_ce_loss_prefix: *w3,
+        *cutmix_ce_loss_prefix: 1.0
+#        *grapheme_ce_loss_prefix: *w1, *vowel_ce_loss_prefix: *w2, *consonant_ce_loss_prefix: *w3,
 #        *grapheme_cen_loss_prefix: 0.5, *vowel_cen_loss_prefix: 0.25, *consonant_cen_loss_prefix: 0.25,
 #        *grapheme_fl_loss_prefix: 0.5, *vowel_fl_loss_prefix: 0.25, *consonant_fl_loss_prefix: 0.25,
 #        *grapheme_arc_loss_prefix: 0.05 , *vowel_arc_loss_prefix: 0.025, *consonant_arc_loss_prefix: 0.025

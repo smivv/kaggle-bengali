@@ -8,8 +8,8 @@ from catalyst.dl import CriterionCallback, State
 
 
 class CutMixUpCallback(CriterionCallback):
-
     LAMBDA_INPUT_KEY = "CutMixUpCallback_lambda"
+    PERMUT_INPUT_KEY = "CutMixUpCallback_permut"
 
     def __init__(
             self,
@@ -37,7 +37,7 @@ class CutMixUpCallback(CriterionCallback):
         assert len(fields) > 0, \
             "At least one field for CutMixUpCallback is required"
         assert alpha >= 0, "alpha must be >= 0"
-        super().__init__(**kwargs)
+        super(CutMixUpCallback, self).__init__(**kwargs)
 
         self.on_train_only = on_train_only
         self.fields = fields
@@ -81,33 +81,41 @@ class CutMixUpCallback(CriterionCallback):
 
     def do_mixup(self, state: State):
         for f in self.fields:
+            obj = state.input[f]
             for i in range(self.batch_size):
                 if self.probs[i] < self.prob:
-                    state.input[f][i] = self.lam[i] * state.input[f][i] + \
-                                        (1 - self.lam[i]) * state.input[f][self.perm[i]]
+                    obj[i] = self.lam[i] * obj[i] + \
+                             (1 - self.lam[i]) * obj[self.perm[i]]
                 else:
                     self.lam[i] = 1
 
     def do_cutmix(self, state: State):
         for f in self.fields:
+            obj = state.input[f]
             for i in range(self.batch_size):
                 if self.probs[i] < self.prob:
-                        left, top, right, bottom = self._rand_bbox(self.lam[i], self.width, self.height)
-                        state.input[f][i, :, top:bottom, left:right] = state.input[f][self.perm[i], :, top:bottom, left:right]
-                        self.lam[i] = 1 - float((right - left) * (bottom - top)) / (self.height * self.width)
+                    l, t, r, b = self._rand_bbox(
+                        self.lam[i], self.width, self.height)
+                    obj[i, :, t:b, l:r] = obj[self.perm[i], :, t:b, l:r]
+                    self.lam[i] = 1 - float((r - l) * (b - t)) / (
+                            self.height * self.width)
                 else:
                     self.lam[i] = 1
 
     def do_both(self, state: State):
         for f in self.fields:
+            obj = state.input[f]
             for i in range(self.batch_size):
                 if self.probs[i] < self.prob:
                     if np.random.rand() < self.method_prob:
-                        left, top, right, bottom = self._rand_bbox(self.lam[i], self.width, self.height)
-                        state.input[f][i, :, top:bottom, left:right] = state.input[f][self.perm[i], :, top:bottom, left:right]
-                        self.lam[i] = 1 - float((right - left) * (bottom - top)) / (self.height * self.width)
+                        l, t, r, b = self._rand_bbox(
+                            self.lam[i], self.width, self.height)
+                        obj[i, :, t:b, l:r] = obj[self.perm[i], :, t:b, l:r]
+                        self.lam[i] = 1 - float((r - l) * (b - t)) / \
+                                      (self.height * self.width)
                     else:
-                        state.input[f][i] = self.lam[i] * state.input[f][i] + (1 - self.lam[i]) * state.input[f][self.perm[i]]
+                        obj[i] = self.lam[i] * obj[i] + \
+                                 (1 - self.lam[i]) * obj[self.perm[i]]
                 else:
                     self.lam[i] = 1
 
@@ -123,44 +131,51 @@ class CutMixUpCallback(CriterionCallback):
 
         if self.alpha > 0:
             self.lam = np.random.beta(
-                    a=self.alpha,
-                    b=self.alpha,
-                    size=self.batch_size)
+                a=self.alpha,
+                b=self.alpha,
+                size=self.batch_size
+            )
         else:
             self.lam = np.ones(size=self.batch_size)
 
         self.perm = np.random.permutation(self.batch_size)
         self.probs = np.random.rand(self.batch_size)
 
-        if CutMixUpCallback.LAMBDA_INPUT_KEY not in state.input:
+        if CutMixUpCallback.LAMBDA_INPUT_KEY not in state.input or \
+                CutMixUpCallback.PERMUT_INPUT_KEY not in state.input:
             self.augment_fn(state)
             state.input[CutMixUpCallback.LAMBDA_INPUT_KEY] = self.lam
+            state.input[CutMixUpCallback.PERMUT_INPUT_KEY] = self.perm
 
     def _compute_loss(self, state: State, criterion):
-        loss_arr = []
-        if not self.is_needed:
-            for input_key, output_key in zip(
-                    self.input_key, self.output_key):
-                pred = state.output[output_key]
-                y = state.input[input_key]
-                loss_arr.append(criterion(pred, y))
-        else:
-            if CutMixUpCallback.LAMBDA_INPUT_KEY not in state.input:
-                raise ValueError("Lambda not found in state input!")
+        losses = []
+        if self.is_needed:
+            if CutMixUpCallback.LAMBDA_INPUT_KEY not in state.input or \
+                    CutMixUpCallback.PERMUT_INPUT_KEY not in state.input:
+                raise ValueError("Lambda and permuts not found in state input!")
 
             self.lam = state.input[CutMixUpCallback.LAMBDA_INPUT_KEY]
             self.lam = torch.tensor(self.lam, requires_grad=False,
                                     dtype=torch.float, device=state.device)
+
+            self.perm = state.input[CutMixUpCallback.PERMUT_INPUT_KEY]
+            # self.perm = torch.tensor(self.perm, requires_grad=False,
+            #                          dtype=torch.float, device=state.device)
+
             for input_key, output_key in zip(self.input_key, self.output_key):
                 pred = state.output[output_key]
                 y_a = state.input[input_key]
                 y_b = state.input[input_key][self.perm]
-                loss_arr.append((
-                    (self.lam * criterion(pred, y_a) +
-                     (1 - self.lam) * criterion(pred, y_b))).mean())
+                losses.append((self.lam * criterion(pred, y_a) +
+                               (1 - self.lam) * criterion(pred, y_b)).mean())
+        else:
+            for input_key, output_key in zip(self.input_key, self.output_key):
+                pred = state.output[output_key]
+                target = state.input[input_key]
+                losses.append(criterion(pred, target))
 
         if self.weights is not None:
-            s = sum([l * w for l, w in zip(loss_arr, self.weights)])
+            s = sum([l * w for l, w in zip(losses, self.weights)])
         else:
-            s = sum(loss_arr)
+            s = sum(losses)
         return s

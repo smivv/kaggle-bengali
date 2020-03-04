@@ -49,9 +49,11 @@ class Experiment(ConfigExperiment):
         test_size: float = 0.2,
         test_only: bool = False,
         use_original: bool = False,
-        use_parquet: bool = False,
+        load_from: str = None,
         files_to_load: List = None,
         to_one_hot: bool = False,
+        num_folds: int = None,
+        fold: int = None,
         stratification: str = "sklearn_stratified",
     ):
         return get_datasets(
@@ -62,8 +64,10 @@ class Experiment(ConfigExperiment):
             test_size=test_size,
             test_only=test_only,
             use_original=use_original,
-            use_parquet=use_parquet,
+            load_from=load_from,
             files_to_load=files_to_load,
             to_one_hot=to_one_hot,
+            num_folds=num_folds,
+            fold=fold,
             stratification=stratification,
         )

@@ -10,8 +10,8 @@ from catalyst import utils
 from catalyst.dl import registry
 from catalyst.contrib.models import SequentialNet
 
-from efficientnet_pytorch import EfficientNet
-from efficientnet_pytorch.utils import get_same_padding_conv2d, round_filters
+# from efficientnet_pytorch import EfficientNet
+# from efficientnet_pytorch.utils import get_same_padding_conv2d, round_filters
 
 from ..datasets.bengali import INPUT_KEYS, NUM_CLASSES, \
     GRAPHEME_OUTPUT_KEY, VOWEL_OUTPUT_KEY, CONSONANT_OUTPUT_KEY
@@ -21,7 +21,7 @@ from ..datasets.bengali import INPUT_KEYS, NUM_CLASSES, \
 class MultiHeadNet(nn.Module):
     def __init__(
             self,
-            backbone: EfficientNet,
+            backbone = None,
             neck: nn.ModuleList = None,
             heads: nn.Module = None,
     ):
@@ -154,23 +154,23 @@ class MultiHeadNet(nn.Module):
                 # )
             enc_size = backbone.last_linear.in_features
 
-        elif backbone_params_["model_name"].startswith("efficientnet"):
-            if pretrained is not None:
-                backbone = EfficientNet.from_pretrained(**backbone_params_)
-            else:
-                backbone = EfficientNet.from_name(**backbone_params_)
-
-            backbone.set_swish(memory_efficient=True)
-
-            if in_channels != 3:
-                Conv2d = get_same_padding_conv2d(
-                    image_size=backbone._global_params.image_size)
-                out_channels = round_filters(32, backbone._global_params)
-                backbone._conv_stem = Conv2d(in_channels, out_channels,
-                                             kernel_size=3,
-                                             stride=2, bias=False)
-
-            enc_size = backbone._conv_head.out_channels
+        # elif backbone_params_["model_name"].startswith("efficientnet"):
+        #     if pretrained is not None:
+        #         backbone = EfficientNet.from_pretrained(**backbone_params_)
+        #     else:
+        #         backbone = EfficientNet.from_name(**backbone_params_)
+        #
+        #     backbone.set_swish(memory_efficient=True)
+        #
+        #     if in_channels != 3:
+        #         Conv2d = get_same_padding_conv2d(
+        #             image_size=backbone._global_params.image_size)
+        #         out_channels = round_filters(32, backbone._global_params)
+        #         backbone._conv_stem = Conv2d(in_channels, out_channels,
+        #                                      kernel_size=3,
+        #                                      stride=2, bias=False)
+        #
+        #     enc_size = backbone._conv_head.out_channels
         else:
             raise NotImplementedError("This model not yet implemented")
 
