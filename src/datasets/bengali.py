@@ -334,7 +334,7 @@ def get_datasets(
 
     for key, dataset in datasets.items():
         if load_from != BengaliDataset.PARQUET:
-            dataset = [os.path.join(dataset_path, img_dir, key,
+            dataset = [os.path.join(dataset_path, img_dir, "train",
                                     f"{i}.{load_from}") for i in dataset]
 
         datasets[key] = BengaliDataset(dataset,
