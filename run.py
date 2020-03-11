@@ -4,10 +4,13 @@ from collections import OrderedDict
 from catalyst.__version__ import __version__
 from catalyst.dl.scripts import init, run, trace
 
+from src.utils import move
+
 COMMANDS = OrderedDict([
     ("init", init),
     ("run", run),
     ("trace", trace),
+    ("move", move)
 ])
 
 

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PublishConfigData" autoUpload="Always" serverName="DevBox/catalyst-classification">
+  <component name="PublishConfigData" autoUpload="Always" serverName="FastGPU/catalyst-classification" showAutoUploadSettingsWarning="false">
     <serverData>
       <paths name="DevBox/catalyst-classification">
         <serverdata>
@@ -9,7 +9,28 @@
           </mappings>
         </serverdata>
       </paths>
+      <paths name="DevBox/d">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/" local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="FastGPU/catalyst-classification">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
       <paths name="Italy">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/" local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="Italy/catalyst-classification">
         <serverdata>
           <mappings>
             <mapping deploy="/" local="$PROJECT_DIR$" web="/" />

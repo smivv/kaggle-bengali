@@ -45,7 +45,7 @@ class MultiHeadNet(nn.Module):
         # Pooling and final linear layer
         x = self.backbone._adapt_avg_pooling(x)
         features = x.view(bs, -1)
-        # features = self.backbone._dropout(x.view(bs, -1))
+        features = self.backbone._dropout(features)
 
         embeddings = self.neck(features) if self.neck is not None else features
 

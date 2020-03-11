@@ -4,9 +4,13 @@ from typing import Any, List, Optional, Union  # isort:skip
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+import numpy as np
+
 from catalyst.dl.core import Callback, CallbackOrder, State
 from sklearn.metrics import recall_score
-import numpy as np
+
+from src.datasets.bengali import CUTMIX_LAMBDA_KEY, CUTMIX_KEYS
 
 
 class RecallCallback(Callback):
@@ -28,8 +32,8 @@ class RecallCallback(Callback):
 
     def on_batch_end(self, state: State):
         scores = []
-        for loss_key, input_key, output_key in zip(
-                self.loss_keys, self.input_keys, self.output_keys):
+        for loss_key, input_key, output_key, cutmix_key in zip(
+                self.loss_keys, self.input_keys, self.output_keys, CUTMIX_KEYS):
 
             target = state.input[input_key].detach().cpu().numpy()
             predicted = state.output[output_key]
@@ -37,8 +41,20 @@ class RecallCallback(Callback):
             _, predicted = torch.max(predicted, 1)
             predicted = predicted.detach().cpu().numpy()
 
-            score = 100 * recall_score(target, predicted,
-                                       average='macro', zero_division=0)
+            if CUTMIX_LAMBDA_KEY in state.input:
+                lam = state.input[CUTMIX_LAMBDA_KEY].detach().cpu().numpy()
+                target2 = state.input[cutmix_key].detach().cpu().numpy()
+                score = 100 * np.mean(lam * recall_score(target,
+                                                         predicted,
+                                                         average='macro',
+                                                         zero_division=0) +
+                                      (1 - lam) * recall_score(target2,
+                                                               predicted,
+                                                               average='macro',
+                                                               zero_division=0))
+            else:
+                score = 100 * recall_score(target, predicted,
+                                           average='macro', zero_division=0)
             state.metric_manager.add_batch_value(name=loss_key, value=score)
             scores.append(score)
 

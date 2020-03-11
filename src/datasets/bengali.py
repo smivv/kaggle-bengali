@@ -21,8 +21,6 @@ TEST_SIZE = 0.1
 W1, W2, W3 = .5, .25, .25
 METRIC_WEIGHTS = [W1, W2, W3]
 
-LOAD_FROM_PARQUETS = True
-
 BATCH_SIZE = 16
 NUM_WORKERS = 4
 
@@ -38,10 +36,16 @@ CONSONANT_KEY = CONSONANT_INPUT_KEY
 
 GRAPHEME_OUTPUT_KEY = "grapheme_root_pred"
 VOWEL_OUTPUT_KEY = "vowel_diacritic_pred"
-CONSONANT_OUTPUT_KEY = 'consonant_diacritic_pred'
+CONSONANT_OUTPUT_KEY = "consonant_diacritic_pred"
+
+CUTMIX_LAMBDA_KEY = "cutmix_lambda"
+CUTMIX_GRAPHEME_KEY = "cutmix_grapheme_root"
+CUTMIX_VOWEL_KEY = "cutmix_vowel_diacritic"
+CUTMIX_CONSONANT_KEY = "cutmix_grapheme_root"
 
 INPUT_KEYS = [GRAPHEME_INPUT_KEY, VOWEL_INPUT_KEY, CONSONANT_INPUT_KEY]
 OUTPUT_KEYS = [GRAPHEME_OUTPUT_KEY, VOWEL_OUTPUT_KEY, CONSONANT_OUTPUT_KEY]
+CUTMIX_KEYS = [CUTMIX_GRAPHEME_KEY, CUTMIX_VOWEL_KEY, CUTMIX_CONSONANT_KEY]
 
 NUM_CLASSES = [168, 11, 7]
 
@@ -116,21 +120,21 @@ class BengaliDataset(Dataset):
         return cv2.resize(img, (size, size))
 
     @staticmethod
-    def rand_bbox(lam):
+    def rand_bbox(lam, height, width):
         cut_rat = np.sqrt(1. - lam)
-        cut_w = np.int(IMAGE_WIDTH * cut_rat)
-        cut_h = np.int(IMAGE_HEIGHT * cut_rat)
+        cut_w = np.int(width * cut_rat)
+        cut_h = np.int(height * cut_rat)
 
         # uniform
-        cx = np.random.randint(IMAGE_WIDTH)
-        cy = np.random.randint(IMAGE_HEIGHT)
+        cx = np.random.randint(width)
+        l = np.clip(cx - cut_w // 2, 0, width)
+        r = np.clip(cx + cut_w // 2, 0, width)
 
-        left = np.clip(cx - cut_w // 2, 0, IMAGE_WIDTH)
-        top = np.clip(cy - cut_h // 2, 0, IMAGE_HEIGHT)
-        right = np.clip(cx + cut_w // 2, 0, IMAGE_WIDTH)
-        bottom = np.clip(cy + cut_h // 2, 0, IMAGE_HEIGHT)
+        cy = np.random.randint(height)
+        t = np.clip(cy - cut_h // 2, 0, height)
+        b = np.clip(cy + cut_h // 2, 0, height)
 
-        return left, top, right, bottom
+        return l, t, r, b
 
     def get_item(self, idx):
         if self.load_from == BengaliDataset.PARQUET:
@@ -181,6 +185,59 @@ class BengaliDataset(Dataset):
         return self.get_item(idx)
 
 
+class CutMixDataset(Dataset):
+    def __init__(self,
+                 dataset,
+                 image_key,
+                 input_keys,
+                 num_classes,
+                 num_mix=1,
+                 beta=1.,
+                 prob=1.0):
+
+        self.dataset = dataset
+        self.num_mix = num_mix
+        self.beta = beta
+        self.prob = prob
+
+        self.image_key = image_key
+        self.input_keys = input_keys
+        self.num_classes = num_classes
+
+    def __getitem__(self, index):
+        sample = self.dataset[index]
+        size = sample[self.image_key].size()
+        height, width = size[-2], size[-1]
+
+        for _ in range(self.num_mix):
+            if self.beta <= 0 or np.random.rand(1) > self.prob:
+                continue
+
+            # generate mixed sample
+            lam = np.random.beta(self.beta, self.beta)
+            rand_index = random.randint(a=0, b=len(self)-1)
+
+            sample_ = self.dataset[rand_index]
+
+            l, t, r, b = BengaliDataset.rand_bbox(lam, height, width)
+
+            sample[self.image_key][:, t:b, l:r] = \
+                sample_[self.image_key][:, t:b, l:r]
+
+            sample[CUTMIX_LAMBDA_KEY] = float((r - l) * (b - t)) / (height * width)
+
+            for cutmix_key, input_key in zip(CUTMIX_KEYS, INPUT_KEYS):
+                sample[cutmix_key] = sample_[input_key]
+
+            # for key, num_classes in zip(self.input_keys, self.num_classes):
+            #     sample[key] = lam * BengaliDataset.to_one_hot(sample[key], num_classes) + \
+            #                 (1. - lam) * BengaliDataset.to_one_hot(sample_[key], num_classes)
+        return sample
+
+    def __len__(self):
+        return len(self.dataset)
+
+
 def get_parquet_paths(dataset_path, name, files_to_load=None):
     if files_to_load is None:
         files_to_load = [0, 1, 2, 3]
@@ -188,28 +245,12 @@ def get_parquet_paths(dataset_path, name, files_to_load=None):
             for i in files_to_load]
 
 
-def get_feather_paths(dataset_path, name, files_to_load=None):
-    if files_to_load is None:
-        files_to_load = [0, 1, 2, 3]
-    return [os.path.join(dataset_path, f"{name}_image_data_{i}.feather")
-            for i in files_to_load]
-
-
 def get_dataframe(dataset_path, name, files_to_load=None):
-    if LOAD_FROM_PARQUETS:
-        paths = get_parquet_paths(dataset_path, name, files_to_load)
-        if len(paths) == 1:
-            return pd.read_parquet(paths[0])
-        else:
-            return pd.concat([pd.read_parquet(p) for p in paths],
-                             ignore_index=True)
+    paths = get_parquet_paths(dataset_path, name, files_to_load)
+    if len(paths) == 1:
+        return pd.read_parquet(paths[0])
     else:
-        paths = get_feather_paths(dataset_path, name, files_to_load)
-        if len(paths) == 1:
-            return pd.read_feather(paths[0])
-        else:
-            return pd.concat([pd.read_feather(p) for p in paths],
-                             ignore_index=True)
+        return pd.concat([pd.read_parquet(p) for p in paths], ignore_index=True)
 
 
 def get_data(dataset_path,
@@ -243,7 +284,8 @@ def get_datasets(
         to_one_hot=False,
         stratification="sklearn_stratified",
         num_folds=None,
-        fold=None
+        fold=None,
+        cutmix=False
 ):
     datasets = collections.OrderedDict()
 
@@ -291,7 +333,7 @@ def get_datasets(
                     datasets["train"], datasets["valid"] = \
                         images[train_indcs], images[valid_indcs]
                 elif isinstance(num_folds, int) and isinstance(fold, int):
-                    print("Using StratifiedKFold...")
+                    print(f"StratifiedKFold with {fold} of {num_folds} folds")
 
                     splitter = StratifiedKFold(n_splits=num_folds,
                                                shuffle=True,
@@ -301,21 +343,12 @@ def get_datasets(
                         if i == fold:
                             datasets["train"], datasets["valid"] = \
                                 images[train_indcs], images[valid_indcs]
+
+                            check_stratification(labels.loc[train_indcs],
+                                                 labels.loc[valid_indcs])
                             break
                 else:
                     raise NotImplementedError("Folding not implemented yet.")
-
-            # elif stratification == "iterstrat":
-            #
-            #     splitter = MultilabelStratifiedShuffleSplit(n_splits=1,
-            #                                                 test_size=test_size,
-            #                                                 random_state=SEED)
-            #     train_indcs, valid_indcs = next(splitter.split(
-            #         X=images, y=labels[INPUT_KEYS].values))
-            #
-            #     datasets["train"], datasets["valid"] = \
-            #         images[train_indcs], images[valid_indcs]
-            #
             else:
                 raise NotImplementedError(
                     f"{stratification} method not implemented")
@@ -343,6 +376,13 @@ def get_datasets(
                                        target_to_use=target_to_use,
                                        use_original=use_original,
                                        to_one_hot=to_one_hot)
+        if cutmix and key == "train":
+            datasets[key] = CutMixDataset(
+                dataset=datasets[key],
+                image_key=IMAGE_KEY,
+                input_keys=INPUT_KEYS,
+                num_classes=NUM_CLASSES
+            )
     return datasets
 
 
@@ -359,7 +399,9 @@ def get_loaders(
         load_from=None,
         files_to_load=None,
         to_one_hot=False,
-        stratification="sklearn_stratified"
+        stratification="sklearn_stratified",
+        num_folds=None,
+        fold=None
 ):
     if target_to_use is None:
         target_to_use = [0, 1, 2]
@@ -373,7 +415,9 @@ def get_loaders(
                             load_from=load_from,
                             files_to_load=files_to_load,
                             to_one_hot=to_one_hot,
-                            stratification=stratification)
+                            stratification=stratification,
+                            num_folds=num_folds,
+                            fold=fold)
 
     loaders = collections.OrderedDict()
 
@@ -402,13 +446,8 @@ def get_filter(dataset_path):
     return count(get_csv(dataset_path, name="train"))
 
 
-def check_stratification(train, valid, df=None):
-    if not isinstance(train, pd.DataFrame) or \
-            not isinstance(valid, pd.DataFrame):
-        train = [os.path.basename(t).split(".")[0] for t in train]
-        valid = [os.path.basename(v).split(".")[0] for v in valid]
-
-    train_count, val_count = get_filter(train), get_filter(valid)
+def check_stratification(train, valid):
+    train_count, val_count = count(train), count(valid)
 
     total = train_count["size"] + val_count["size"]
     train_part = train_count["size"] / total

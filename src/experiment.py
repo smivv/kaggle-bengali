@@ -54,6 +54,7 @@ class Experiment(ConfigExperiment):
         to_one_hot: bool = False,
         num_folds: int = None,
         fold: int = None,
+        cutmix: bool = False,
         stratification: str = "sklearn_stratified",
     ):
         return get_datasets(
@@ -69,5 +70,6 @@ class Experiment(ConfigExperiment):
             to_one_hot=to_one_hot,
             num_folds=num_folds,
             fold=fold,
+            cutmix=cutmix,
             stratification=stratification,
         )

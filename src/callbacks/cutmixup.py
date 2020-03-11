@@ -60,7 +60,7 @@ class CutMixUpCallback(CriterionCallback):
         self.height = None
 
         self.probs = None
-        self.perm = None
+        self.permutations = None
 
     def on_loader_start(self, state: State):
         self.is_needed = not self.on_train_only or \
@@ -85,7 +85,7 @@ class CutMixUpCallback(CriterionCallback):
             for i in range(self.batch_size):
                 if self.probs[i] < self.prob:
                     obj[i] = self.lam[i] * obj[i] + \
-                             (1 - self.lam[i]) * obj[self.perm[i]]
+                             (1 - self.lam[i]) * obj[self.permutations[i]]
                 else:
                     self.lam[i] = 1
 
@@ -96,7 +96,7 @@ class CutMixUpCallback(CriterionCallback):
                 if self.probs[i] < self.prob:
                     l, t, r, b = self._rand_bbox(
                         self.lam[i], self.width, self.height)
-                    obj[i, :, t:b, l:r] = obj[self.perm[i], :, t:b, l:r]
+                    obj[i, :, t:b, l:r] = obj[self.permutations[i], :, t:b, l:r]
                     self.lam[i] = 1 - float((r - l) * (b - t)) / (
                             self.height * self.width)
                 else:
@@ -110,12 +110,12 @@ class CutMixUpCallback(CriterionCallback):
                     if np.random.rand() < self.method_prob:
                         l, t, r, b = self._rand_bbox(
                             self.lam[i], self.width, self.height)
-                        obj[i, :, t:b, l:r] = obj[self.perm[i], :, t:b, l:r]
+                        obj[i, :, t:b, l:r] = obj[self.permutations[i], :, t:b, l:r]
                         self.lam[i] = 1 - float((r - l) * (b - t)) / \
                                       (self.height * self.width)
                     else:
                         obj[i] = self.lam[i] * obj[i] + \
-                                 (1 - self.lam[i]) * obj[self.perm[i]]
+                                 (1 - self.lam[i]) * obj[self.permutations[i]]
                 else:
                     self.lam[i] = 1
 
@@ -138,14 +138,14 @@ class CutMixUpCallback(CriterionCallback):
         else:
             self.lam = np.ones(size=self.batch_size)
 
-        self.perm = np.random.permutation(self.batch_size)
+        self.permutations = np.random.permutation(self.batch_size)
         self.probs = np.random.rand(self.batch_size)
 
         if CutMixUpCallback.LAMBDA_INPUT_KEY not in state.input or \
                 CutMixUpCallback.PERMUT_INPUT_KEY not in state.input:
             self.augment_fn(state)
             state.input[CutMixUpCallback.LAMBDA_INPUT_KEY] = self.lam
-            state.input[CutMixUpCallback.PERMUT_INPUT_KEY] = self.perm
+            state.input[CutMixUpCallback.PERMUT_INPUT_KEY] = self.permutations
 
     def _compute_loss(self, state: State, criterion):
         losses = []
@@ -158,16 +158,18 @@ class CutMixUpCallback(CriterionCallback):
             self.lam = torch.tensor(self.lam, requires_grad=False,
                                     dtype=torch.float, device=state.device)
 
-            self.perm = state.input[CutMixUpCallback.PERMUT_INPUT_KEY]
+            self.permutations = state.input[CutMixUpCallback.PERMUT_INPUT_KEY]
             # self.perm = torch.tensor(self.perm, requires_grad=False,
             #                          dtype=torch.float, device=state.device)
 
             for input_key, output_key in zip(self.input_key, self.output_key):
                 pred = state.output[output_key]
                 y_a = state.input[input_key]
-                y_b = state.input[input_key][self.perm]
-                losses.append((self.lam * criterion(pred, y_a) +
-                               (1 - self.lam) * criterion(pred, y_b)).mean())
+                y_b = state.input[input_key][self.permutations]
+                # losses.append((self.lam * criterion(pred, y_a) +
+                #                (1 - self.lam) * criterion(pred, y_b)).mean())
+                losses.append(((1 - self.lam) * criterion(pred, y_a) +
+                                self.lam * criterion(pred, y_b)).mean())
         else:
             for input_key, output_key in zip(self.input_key, self.output_key):
                 pred = state.output[output_key]
