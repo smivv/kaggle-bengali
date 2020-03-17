@@ -19,7 +19,8 @@ GLOBALS:
   consonant_num_classes: &consonant_num_classes 7
 
   model_name: &model_name "se_resnext50_32x4d"
-  logdir: &logdir "./logs/se_resnext50_32x4d_5e-3_radaml_onplateu_neck_2lheads_2x80cutouts1_5stratfold0"
+  logdir: &logdir "./logs/se_resnext50_32x4d_1e-3_radaml_onplateu_neck_2lheads_6x50cutouts1_10stratfold8"
+#  logdir: &logdir "./logs/se_resnext50_32x4d_1e-3_radaml_onplateu_neck_2lheads_6x50cutouts1_full_train"
 
   MAIN_METRIC: &MAIN_METRIC "_total_recall"
   REDUCE_METRIC: &REDUCE_METRIC "loss"
@@ -183,6 +184,7 @@ stages:
     image_height: *image_height
     image_width: *image_width
 
+    train_only: False
     test_only: False
     use_original: True
     load_from: "jpeg"
@@ -192,8 +194,8 @@ stages:
 #    stratification: "sklearn_random"
     stratification: "sklearn_stratified"
     test_size: 0.1
-    num_folds: 5
-    fold: 0
+    num_folds: 10
+    fold: 8
 
     cutmix: False
 

@@ -13,6 +13,14 @@ def build_args(parser: ArgumentParser):
     """
     parser.add_argument("logdir", type=Path, help="Path to model logdir")
 
+    parser.add_argument(
+        "--checkpoint",
+        "-c",
+        default="best",
+        help="Checkpoint's name to trace",
+        metavar="CHECKPOINT_NAME"
+    )
+
     return parser
 
 
@@ -41,7 +49,7 @@ def main(args, _):
     with open(str(logdir / "checkpoints" / "_metrics.json")) as f:
         data = json.load(f)
 
-        recall = data["best"]["_total_recall"]
+        recall = data[args.checkpoint]["_total_recall"]
         epoch = None
 
         for k, v in data.items():
@@ -60,8 +68,10 @@ def main(args, _):
         shutil.copyfile(str(logdir / "configs" / "config.yml"),
                         str(logdir / "trace" / f"{expname}_{epoch}_{recall}.yml"))
 
-        os.rename(str(logdir / "trace" / "traced-best-forward.pth"),
+        os.rename(str(logdir / "trace" / f"traced-{args.checkpoint}-forward.pth"),
                   str(logdir / "trace" / f"{expname}_{epoch}_{recall}.jit"))
+
+    print("Done!")
 
 
 if __name__ == "__main__":

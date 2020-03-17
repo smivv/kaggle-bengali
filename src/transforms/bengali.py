@@ -16,6 +16,8 @@ def pre_transforms(image_height, image_width):
 
 
 def hard_transforms(image_height, image_width):
+    num = 6
+    size = 50
     return [
         # Random shifts, stretches and turns with a 50% probability
         ShiftScaleRotate(
@@ -42,24 +44,38 @@ def hard_transforms(image_height, image_width):
         #     Blur(p=0.2),
         # ], p=1.0),
 
-
         CoarseDropout(
-            min_holes=2,
-            max_holes=2,
+            min_holes=num,
+            max_holes=num,
             # min_height=image_height // 4,
             # max_height=image_height // 4,
             # min_width=image_width // 4,
             # max_width=image_width // 4,
-            min_height=80,
-            max_height=80,
-            min_width=80,
-            max_width=80,
+            min_height=size,
+            max_height=size,
+            min_width=size,
+            max_width=size,
             fill_value=0,
             p=1.0
         )
         # Random gamma changes with a 30% probability
         # RandomGamma(gamma_limit=(85, 115), p=0.3),
         # ImageCompression(quality_lower=80),
+    ]
+
+
+def tta_transforms():
+    return [
+        # Random shifts, stretches and turns with a 50% probability
+        ShiftScaleRotate(
+            shift_limit=0.2,
+            scale_limit=0.2,
+            rotate_limit=20,
+            border_mode=2,
+            # border_mode=0,
+            # value=0,
+            p=0.5
+        ),
     ]
 
 

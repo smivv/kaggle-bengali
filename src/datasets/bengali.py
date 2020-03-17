@@ -6,8 +6,11 @@ import numpy as np
 import pandas as pd
 
 from torch.utils.data import Dataset, DataLoader
-from sklearn.preprocessing import LabelEncoder, LabelBinarizer, MultiLabelBinarizer, OneHotEncoder
-from sklearn.model_selection import train_test_split, StratifiedShuffleSplit, StratifiedKFold
+from sklearn.preprocessing import LabelEncoder, LabelBinarizer, \
+    MultiLabelBinarizer, OneHotEncoder
+from sklearn.model_selection import train_test_split, StratifiedShuffleSplit, \
+    StratifiedKFold
+
 # from iterstrat.ml_stratifiers import MultilabelStratifiedShuffleSplit
 
 IMAGE_HEIGHT = 137
@@ -215,7 +218,7 @@ class CutMixDataset(Dataset):
 
             # generate mixed sample
             lam = np.random.beta(self.beta, self.beta)
-            rand_index = random.randint(a=0, b=len(self)-1)
+            rand_index = random.randint(a=0, b=len(self) - 1)
 
             sample_ = self.dataset[rand_index]
 
@@ -224,7 +227,8 @@ class CutMixDataset(Dataset):
             sample[self.image_key][:, t:b, l:r] = \
                 sample_[self.image_key][:, t:b, l:r]
 
-            sample[CUTMIX_LAMBDA_KEY] = float((r - l) * (b - t)) / (height * width)
+            sample[CUTMIX_LAMBDA_KEY] = float((r - l) * (b - t)) / (
+                        height * width)
 
             for cutmix_key, input_key in zip(CUTMIX_KEYS, INPUT_KEYS):
                 sample[cutmix_key] = sample_[input_key]
@@ -277,6 +281,7 @@ def get_datasets(
         transforms=None,
         target_to_use=None,
         test_size=None,
+        train_only=False,
         test_only=False,
         use_original=False,
         load_from=None,
@@ -294,12 +299,28 @@ def get_datasets(
     if transforms is None:
         transforms = {"train": None, "valid": None, "test": None}
 
+    if train_only and test_only:
+        raise NotImplementedError("train_only can't be used together with "
+                                  "test_only")
+
     if test_only:
         datasets["test"] = get_data(dataset_path=dataset_path,
                                     labels=labels,
                                     subset="test",
                                     load_from=load_from,
                                     files_to_load=files_to_load)
+    if train_only:
+        datasets["train"] = get_data(dataset_path=dataset_path,
+                                     labels=labels,
+                                     subset="train",
+                                     load_from=load_from,
+                                     files_to_load=files_to_load)
+
+        datasets["valid"] = get_data(dataset_path=dataset_path,
+                                     labels=labels,
+                                     subset="train",
+                                     load_from=load_from,
+                                     files_to_load=files_to_load)
     else:
         labels['label'] = labels[INPUT_KEYS].apply(tuple, axis=1)
         labels['label'] = pd.factorize(labels['label'])[0] + 1
@@ -394,6 +415,7 @@ def get_loaders(
         shuffle=False,
         test_size=None,
         target_to_use=None,
+        train_only=False,
         test_only=False,
         use_original=False,
         load_from=None,
@@ -410,6 +432,7 @@ def get_loaders(
                             transforms=transforms,
                             target_to_use=target_to_use,
                             test_size=test_size,
+                            train_only=train_only,
                             test_only=test_only,
                             use_original=use_original,
                             load_from=load_from,
