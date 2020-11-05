@@ -13,15 +13,12 @@ from catalyst.contrib.models import SequentialNet
 # from efficientnet_pytorch import EfficientNet
 # from efficientnet_pytorch.utils import get_same_padding_conv2d, round_filters
 
-from ..datasets.bengali import INPUT_KEYS, NUM_CLASSES, \
-    GRAPHEME_OUTPUT_KEY, VOWEL_OUTPUT_KEY, CONSONANT_OUTPUT_KEY
-
 
 @registry.Model
-class MultiHeadNet(nn.Module):
+class GenericModel(nn.Module):
     def __init__(
             self,
-            backbone = None,
+            backbone=None,
             neck: nn.ModuleList = None,
             heads: nn.Module = None,
     ):
@@ -30,22 +27,20 @@ class MultiHeadNet(nn.Module):
         self.neck = neck
         self.heads = heads
 
-    def forward(self, x: torch.Tensor):
-        bs = x.size(0)
-
-        # x = self.backbone.conv0(x)
+    def forward(self, image: torch.Tensor):
+        batch_size = image.size(0)
 
         if hasattr(self.backbone, "extract_features"):
-            x = self.backbone.extract_features(x)
+            x = self.backbone.extract_features(image)
         elif hasattr(self.backbone, "features"):
-            x = self.backbone.features(x)
+            x = self.backbone.features(image)
         else:
             raise NotImplementedError("Method not found")
 
         # Pooling and final linear layer
-        x = self.backbone._adapt_avg_pooling(x)
-        features = x.view(bs, -1)
-        features = self.backbone._dropout(features)
+        x = self.backbone.avg_pool(x)
+        features = x.view(batch_size, -1)
+        features = self.backbone.dropout(features)
 
         embeddings = self.neck(features) if self.neck is not None else features
 
@@ -57,9 +52,7 @@ class MultiHeadNet(nn.Module):
         for key, head in self.heads.items():
             result[key] = head(embeddings)
 
-        return result[GRAPHEME_OUTPUT_KEY], \
-               result[VOWEL_OUTPUT_KEY], \
-               result[CONSONANT_OUTPUT_KEY]
+        return result["embeddings"], result["logits"]
 
     @classmethod
     def get_from_params(
@@ -67,7 +60,7 @@ class MultiHeadNet(nn.Module):
             backbone_params: Dict = None,
             neck_params: Dict = None,
             heads_params: Dict = None,
-    ) -> "MultiHeadNet":
+    ) -> "GenericModel":
 
         backbone_params_ = deepcopy(backbone_params)
         neck_params_ = deepcopy(neck_params)
@@ -83,11 +76,6 @@ class MultiHeadNet(nn.Module):
         else:
             pretrained = True
 
-        if "in_channels" in backbone_params_:
-            in_channels = backbone_params_.pop("in_channels")
-        else:
-            in_channels = 3
-
         if backbone_params_["model_name"] in pretrainedmodels.__dict__:
             model_name = backbone_params_.pop("model_name")
 
@@ -96,62 +84,6 @@ class MultiHeadNet(nn.Module):
                 pretrained="imagenet" if pretrained else None
             )
 
-            if in_channels != 3:
-                if model_name == "pnasnet5large":
-                    old_conv = backbone.conv_0.conv
-                    backbone.conv_0.conv = nn.Conv2d(
-                        in_channels=1,
-                        out_channels=old_conv.out_channels,
-                        kernel_size=old_conv.kernel_size,
-                        stride=old_conv.stride,
-                        bias=False
-                    )
-                    backbone.conv_0.conv.weight = nn.Parameter(
-                        data=old_conv.weight.data[:, 0, :, :].unsqueeze(1),
-                        requires_grad=requires_grad
-                    )
-                elif model_name in ["se_resnext50_32x4d",
-                                    "se_resnext101_32x4d"]:
-                    old_conv = backbone.layer0.conv1
-                    backbone.layer0.conv1 = nn.Conv2d(
-                        in_channels=1,
-                        out_channels=old_conv.out_channels,
-                        kernel_size=old_conv.kernel_size,
-                        padding=(3, 3),
-                        stride=old_conv.stride,
-                        bias=False
-                    )
-
-                    backbone.layer0.conv1.weight = nn.Parameter(
-                        data=old_conv.weight.data[:, 0, :, :].unsqueeze(1),
-                        requires_grad=requires_grad
-                    )
-
-                    # backbone.avg_pool = backbone.last_linear = None
-
-                elif model_name == "densenet161":
-                    old_conv = backbone.conv0
-                    backbone.conv0 = nn.Conv2d(
-                        in_channels=1,
-                        out_channels=old_conv.out_channels,
-                        kernel_size=old_conv.kernel_size,
-                        stride=old_conv.stride,
-                        bias=False
-                    )
-                    backbone.conv0.weight = nn.Parameter(
-                        data=old_conv.weight.data[:, 0, :, :].unsqueeze(1),
-                        requires_grad=requires_grad
-                    )
-                else:
-                    raise NotImplementedError("This model not yet implemented")
-                # backbone.conv0 = nn.Conv2d(
-                #     in_channels=1,
-                #     out_channels=3,
-                #     kernel_size=3,
-                #     stride=1,
-                #     padding=1,
-                #     bias=True,
-                # )
             enc_size = backbone.last_linear.in_features
 
         # elif backbone_params_["model_name"].startswith("efficientnet"):
@@ -174,11 +106,9 @@ class MultiHeadNet(nn.Module):
         else:
             raise NotImplementedError("This model not yet implemented")
 
-        backbone._adapt_avg_pooling = nn.AdaptiveAvgPool2d(1)
-        backbone._dropout = nn.Dropout(p=0.2)
-
-        for param in backbone.parameters():
-            param.requires_grad = requires_grad
+        del backbone.last_linear
+        # backbone._adapt_avg_pooling = nn.AdaptiveAvgPool2d(1)
+        # backbone._dropout = nn.Dropout(p=0.2)
 
         neck = None
         if neck_params_:
@@ -187,14 +117,10 @@ class MultiHeadNet(nn.Module):
 
             if neck_params_ is not None:
                 neck = SequentialNet(**neck_params_)
-            neck.requires_grad = requires_grad
+            # neck.requires_grad = requires_grad
         else:
             emb_size = enc_size
 
-        # heads = {}
-        # for key, out_size in zip(INPUT_KEYS, NUM_CLASSES):
-        #     heads[key] = nn.Linear(in_features=emb_size,
-        #                            out_features=out_size, bias=True)
         if heads_params_ is not None:
             head_kwargs_ = {}
             for head, params in heads_params_.items():
@@ -203,7 +129,7 @@ class MultiHeadNet(nn.Module):
                 elif isinstance(heads_params_, dict):
                     params["hiddens"].insert(0, emb_size)
                     head_kwargs_[head] = SequentialNet(**params)
-                head_kwargs_[head].requires_grad = requires_grad
+                # head_kwargs_[head].requires_grad = requires_grad
             heads = nn.ModuleDict(head_kwargs_)
         else:
             heads = None
@@ -216,5 +142,5 @@ class MultiHeadNet(nn.Module):
 
         utils.set_requires_grad(model, requires_grad)
 
-        print(model)
+        # print(model)
         return model

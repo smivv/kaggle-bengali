@@ -39,3 +39,10 @@ class FocalLossMultiClassFixed(FocalLossBinary):
             loss += self.loss_fn(cls_label_input, cls_label_target)
 
         return loss
+
+    def forward(self, input, target):
+        logp = self.ce(input, target)
+        p = torch.exp(-logp)
+        loss = (1 - p) ** self.gamma * logp
+        return loss.mean()
+

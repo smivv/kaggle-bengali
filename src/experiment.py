@@ -1,13 +1,11 @@
 import torch
 import torch.nn as nn
 
-from typing import Union, List, Dict
-
-from catalyst.data.augmentor import Augmentor
 from catalyst.dl import ConfigExperiment
+from catalyst.data.sampler import BalanceClassSampler
 
-from .datasets.bengali import get_datasets
-from .transforms.bengali import get_transforms
+from src.datasets.cico import get_datasets
+from .transforms.cico import get_transforms
 
 
 class Experiment(ConfigExperiment):
@@ -25,53 +23,31 @@ class Experiment(ConfigExperiment):
 
         return model_
 
-    @staticmethod
-    def get_transforms(
-        stage: str = None,
-        mode: str = None,
-        image_height: int = 224,
-        image_width: int = 224,
-        one_hot_classes: int = None
-    ):
-        result_fn = get_transforms(image_height=image_height,
-                                   image_width=image_width)[mode]
-        return Augmentor(
-            dict_key="image", augment_fn=lambda x: result_fn(image=x)["image"]
-        )
-
     def get_datasets(
-        self,
-        stage: str,
-        dataset_path: str = None,
-        target_to_use: List = None,
-        image_height: int = 224,
-        image_width: int = 224,
-        test_size: float = 0.2,
-        train_only: bool = False,
-        test_only: bool = False,
-        use_original: bool = False,
-        load_from: str = None,
-        files_to_load: List = None,
-        to_one_hot: bool = False,
-        num_folds: int = None,
-        fold: int = None,
-        cutmix: bool = False,
-        stratification: str = "sklearn_stratified",
+            self,
+            stage: str,
+            *args,
+            **kwargs
     ):
-        return get_datasets(
-            dataset_path=dataset_path,
-            transforms=get_transforms(image_height=image_height,
-                                      image_width=image_width),
-            target_to_use=target_to_use,
-            test_size=test_size,
-            train_only=train_only,
-            test_only=test_only,
-            use_original=use_original,
-            load_from=load_from,
-            files_to_load=files_to_load,
-            to_one_hot=to_one_hot,
-            num_folds=num_folds,
-            fold=fold,
-            cutmix=cutmix,
-            stratification=stratification,
-        )
+        kwargs["transforms"] = get_transforms(kwargs["image_size"])
+
+        datasets = get_datasets(*args, **kwargs)
+
+        datasets["train"] = {
+            "dataset": datasets["train"],
+            "sampler": BalanceClassSampler(
+                labels=[datasets["train"].get_label(i)
+                        for i in range(len(datasets["train"]))],
+                mode="upsampling",
+            )
+        }
+
+        if stage.startswith("infer"):
+            datasets["infer_train"] = datasets["train"]
+            del datasets["train"]
+
+            if "doe" in stage:
+                datasets["infer_valid"] = datasets["valid"]
+                del datasets["valid"]
+
+        return datasets

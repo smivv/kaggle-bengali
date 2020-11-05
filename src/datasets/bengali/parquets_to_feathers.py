@@ -1,6 +1,6 @@
 import pandas as pd
 
-from .bengali import get_parquet_paths, get_feather_paths
+from src.datasets.bengali import get_parquet_paths, get_feather_paths
 
 
 DATAPATH = "/workspace/Datasets/BENGALI"

@@ -14,35 +14,44 @@ class CutMixUpCallback(CriterionCallback):
     def __init__(
             self,
             fields: List[str] = ("image",),
-            alpha=1.0,
-            prob=0.5,
-            on_train_only=True,
-            weights=None,
-            method="both",
-            method_prob=0.5,
+            alpha: float = 1.0,
+            prob: float = 0.5,
+            on_train_only: bool = True,
+            weights: List[float] = None,
+            method: str = "both",
+            method_prob: float = 0.5,
             **kwargs
     ):
         """
+        Cutmix & Mixup callback.
+
         Args:
             fields (List[str]): list of features which must be affected.
             alpha (float): beta distribution a=b parameters.
                 Must be >=0. The more alpha closer to zero
                 the less effect of the mixup.
+            prob (float): Probability to call one of augmentations.
             on_train_only (bool): Apply to train only.
                 As the mixup use the proxy inputs, the targets are also proxy.
                 We are not interested in them, are we?
                 So, if on_train_only is True, use a standard output/metric
                 for validation.
+            weights (List[float]): Loss weights.
+            method: (str): One of `cutmix`, `mixup` or `both`.
+            method_prob (float): Probability to choose one method or another.
+            **kwargs:
         """
+        super(CutMixUpCallback, self).__init__(**kwargs)
+
         assert len(fields) > 0, \
             "At least one field for CutMixUpCallback is required"
         assert alpha >= 0, "alpha must be >= 0"
-        super(CutMixUpCallback, self).__init__(**kwargs)
 
-        self.on_train_only = on_train_only
-        self.fields = fields
-        self.alpha = alpha
-        self.prob = prob
+        self.fields: List[str] = fields
+        self.alpha: float = alpha
+        self.prob: float = prob
+        self.on_train_only: bool = on_train_only
+
         self.lam = None
         self.is_needed = True
         self.method_prob = method_prob

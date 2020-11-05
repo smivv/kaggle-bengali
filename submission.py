@@ -9,12 +9,8 @@ from sklearn.metrics import recall_score
 import safitty
 from catalyst.utils import load_ordered_yaml
 
-from src.models.multiheadnet import MultiHeadNet
+from src.models.bengali.multiheadnet import MultiHeadNet
 from src.transforms.bengali import get_transforms
-from src.datasets.bengali import get_loaders, get_num_classes, INPUT_KEYS, \
-    GRAPHEME_INPUT_KEY, VOWEL_INPUT_KEY, CONSONANT_INPUT_KEY, \
-    GRAPHEME_OUTPUT_KEY, VOWEL_OUTPUT_KEY, CONSONANT_OUTPUT_KEY, \
-    IMAGE_HEIGHT, IMAGE_WIDTH
 
 
 def softmax(outputs, k=None):
@@ -52,18 +48,10 @@ def predict(models: list, image: torch.Tensor):
         for model in models:
             g, v, c = model["model"](image)
 
-            values = softmax({
-                GRAPHEME_INPUT_KEY: g,
-                VOWEL_INPUT_KEY: v,
-                CONSONANT_INPUT_KEY: c
-            })
+            values = softmax({})
 
             if outputs is None:
-                outputs = {
-                    GRAPHEME_INPUT_KEY: values[GRAPHEME_INPUT_KEY],
-                    VOWEL_INPUT_KEY: values[VOWEL_INPUT_KEY],
-                    CONSONANT_INPUT_KEY: values[CONSONANT_INPUT_KEY],
-                }
+                outputs = {}
             else:
                 outputs[GRAPHEME_INPUT_KEY] += values[GRAPHEME_INPUT_KEY]
                 outputs[VOWEL_INPUT_KEY] += values[VOWEL_INPUT_KEY]

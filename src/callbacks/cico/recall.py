@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 import numpy as np
 
-from catalyst.dl.core import Callback, CallbackOrder, State
+from catalyst.dl import Callback, CallbackOrder, State
 from sklearn.metrics import recall_score
 
 from src.datasets.bengali import CUTMIX_LAMBDA_KEY, CUTMIX_KEYS

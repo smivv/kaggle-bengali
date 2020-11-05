@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="cc70b647-8376-4dfb-ac5d-341751386a06" name="DevBox/d" url="http://10.43.14.252">
+        <fileTransfer rootFolder="/home/shustdmi/PycharmProjects/" accessType="SFTP" host="10.43.14.252" port="22" sshConfigId="3422ca2d-88a5-4a28-81a2-0b3407ea1d02" sshConfig="DevBox/d">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+      <webServer id="72cd56c9-4ac1-4a4f-b949-b826213611af" name="DevBox/catalyst-classification" url="http://10.43.14.252">
+        <fileTransfer rootFolder="/home/smirnvla/PycharmProjects/catalyst-classification" accessType="SFTP" sshConfigId="f1a1149e-d290-4d06-9eab-c876269d5d0a" sshConfig="DevBox/catalyst-classification">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+      <webServer id="e8f75b98-8edb-468f-9743-f2aae07d5a7e" name="Italy/catalyst-classification" url="http://10.4.4.16">
+        <fileTransfer rootFolder="/home/senslab1/.projects/catalyst-classification" accessType="SFTP" host="10.4.4.16" port="22" sshConfigId="af83c935-684f-4398-a74c-e624c4cbd967" sshConfig="Italy/catalyst-classification">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+      <webServer id="638ca3dd-1d9d-459e-95ab-c5ef7a13d2c9" name="FastGPU/catalyst-classification" url="http://3.80.213.25">
+        <fileTransfer rootFolder="/home/ubuntu/catalyst-classification" accessType="SFTP" host="3.80.213.25" port="22" sshConfigId="1af7c11c-c5aa-4780-9ba2-8903d658d3e6" sshConfig="FastGPU/catalyst-classification">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>

@@ -1,0 +1,335 @@
+GLOBALS:
+  image_size: &image_size 224
+
+  input_filename_key: &input_filename_key "filename"
+  input_image_key: &input_image_key "image"
+  input_target_key: &input_target_key "target"
+  input_label_key: &input_label_key "label"
+
+  output_embedding_key: &output_embedding_key "embeddings"
+  output_target_key: &output_target_key "logits"
+
+  embedding_size: &embedding_size 256
+  head_size: &head_size 256
+
+  num_classes: &num_classes 15
+  class_names: &class_names [ # MAX: 0.82554023 [7145 / (7145 + 33810) = 40955]
+    'Bread_and_Rolls__Baguette',
+    'Bread_and_Rolls__Rolls_frozen',
+    'Cake_and_Pastry__Muffins',
+    'No_Food__',
+    'Pizza__',
+    'Pizza_and_Quiche__Onion_Tart',
+    'Poultry__Chicken,_whole',
+    'Poultry__Chicken_legs',
+    'Poultry__Chicken_nuggets',
+    'Poultry__Chicken_wings',
+    'Side_dishes__Croquettes',
+    'Side_dishes__French_fries_frozen',
+    'Side_dishes__Wedges',
+    'Unknown__Cookies',
+    'Vegetables__Mediterranean_Vegetables'
+  ]
+
+  model_name: &model_name "nasnetamobile"
+  logdir: &logdir "./logs/cico15_256_arcface_64_5e-1_radam_plateu_1e-0_l2neck_stratified_bench"
+
+  MAIN_METRIC: &MAIN_METRIC "_acc01"
+  REDUCE_METRIC: &REDUCED_METRIC "loss"
+
+  num_epochs: &num_epochs 50
+  batch_size: &batch_size 256
+
+  lr_top: &lr_top 0.005
+  lr_start: &lr_start 1.0
+  lr_end: &lr_end 0.000001
+  wd: &wd 0.0003
+
+################################################################################
+
+OPTIMIZERS:
+  adam: &adam
+    optimizer: Adam
+    lr: *lr_start
+    weight_decay: *wd
+
+  adam_lookahead: &adam_lookahead
+    optimizer: Lookahead
+    base_optimizer_params:
+      optimizer: RAdam
+      lr: *lr_start
+      weight_decay: *wd
+
+  radam_lookahead: &radam_lookahead
+    optimizer: Lookahead
+    base_optimizer_params:
+      optimizer: RAdam
+      lr: *lr_start
+      weight_decay: *wd
+
+################################################################################
+
+SCHEDULERS:
+  exponential: &exponential
+    scheduler: ExponentialLR
+    gamma: 0.9
+
+  cosine_warmup_restarts: &cosine_warmup_restarts
+    scheduler: CosineAnnealingWarmUpRestarts
+    T_0: 200
+    T_mult: 2
+    eta_max: *lr_top
+    eta_min: *lr_end
+    T_up: 10
+    gamma: 0.5
+
+  lr_on_plateu: &lr_on_plateu
+    scheduler: ReduceLROnPlateau
+    factor: 0.5
+    patience: 5
+    threshold: 0.00001
+
+  lr_on_plateu_cutmixup: &lr_on_plateu_cutmixup
+    scheduler: ReduceLROnPlateau
+    factor: 0.5
+    patience: 10
+    threshold: 0.00001
+
+  multi_step_scheduler: &multi_step_scheduler
+    scheduler: MultiStepLR
+    milestones: [20, 40, 70]
+    gamma: 0.5
+
+#################################### MODEL #####################################
+
+model_params:
+  model: GenericModel
+  backbone_params:
+    model_name: *model_name
+    pretrained: True
+    requires_grad: True
+
+  neck_params:
+    hiddens: [*embedding_size]
+    layer_fn: {"module": "Linear", "bias": True}
+    norm_fn: L2Norm
+    activation_fn: ReLU
+
+  heads_params:
+    *output_target_key:
+      hiddens: [
+        *num_classes
+      ]
+      layer_fn: ArcFaceLinear
+      norm_fn: null
+      activation_fn: null
+      dropout_fn: null
+
+##################################### ARGS #####################################
+
+args:
+  expdir: "./src/"
+  logdir: *logdir
+  seed: 69 # KEYWORD, training seed for PyTorch, Numpy, Python and Tensorflow
+  per_gpu_scaling: True
+  deterministic: True  # KEYWORD, whether to use deterministic CuDNN (Default is True)
+  benchmark: True  # KEYWORD, whether to use CuDNN benchmark
+  verbose: True  # KEYWORD, whether to display learning information on the console (Default is False)
+  check: False  # KEYWORD, if True, then Catalyst does only 3 epochs (to check the performance of the pipeline, by default False)
+
+runner_params:  # OPTIONAL KEYWORD, params for Runner's init
+  input_key: [*input_image_key]
+  output_key: [*output_embedding_key, *output_target_key]
+  input_target_key: *input_target_key
+
+#distributed_params:  # OPTIONAL KEYWORD, params for distributed training and NVIDIA Apex
+#  rank: -1  # Rank for distributed training
+#  opt_level: O1  # Example for NVIDIA Apex
+#  syncbn: True  # KEYWORD, whether to convert BatchNorm to SyncBatchNorm (Default is False)
+#  # This level may contain other parameters for the initialization of NVIDIA Apex
+
+#################################### STAGES ####################################
+
+stages:
+  data_params:
+#    dataset_path: "/workspace/Datasets/CICO1.0/OFR_no_food_modified/initial"
+    dataset_path: "/workspace/Datasets/CICO1.5/benchmarking_plan/v3"
+    additional_paths: [
+      "/workspace/Datasets/CICO1.5/benchmarking_plan/DoE_norm",
+      "/workspace/Datasets/CICO1.5/benchmarking_plan/DoE_rotated",
+    ]
+#    use_one_hot: True
+    image_size: *image_size
+    batch_size: *batch_size
+    num_workers: 12
+    class_names: *class_names
+    shuffle: True
+
+  criterion_params:
+    _key_value: True
+    arc:
+      criterion: ArcFaceLoss
+      num_classes: *num_classes
+      s: 64.0
+      m: 0.5
+
+  # train head
+  stage1:
+    state_params:
+      num_epochs: *num_epochs
+      main_metric: *MAIN_METRIC
+      minimize_metric: False
+
+    optimizer_params: *radam_lookahead
+    scheduler_params: *lr_on_plateu
+    callbacks_params:
+      optimizer:
+        callback: OptimizerCallback
+      scheduler:
+        callback: SchedulerCallback
+        reduced_metric: *REDUCED_METRIC
+      saver:
+        callback: CheckpointCallback
+        save_n_best: 3
+
+      criterion_callback:
+        callback: CriterionCallback
+        input_key: *input_target_key
+        output_key: *output_target_key
+        criterion_key: "arc"
+        prefix: *REDUCED_METRIC
+
+      accuracy_callback:
+        callback: AccuracyCallback
+        input_key: *input_target_key
+        output_key: *output_target_key
+        num_classes: *num_classes
+        prefix: &acc_prefox "_acc"
+        accuracy_args: [1, 3]
+        activation: "Softmax"
+
+      confusion_matrix_callback:
+        callback: ConfusionMatrixCallback
+        input_key: *input_target_key
+        output_key: *output_target_key
+        num_classes: *num_classes
+        class_names: *class_names
+        prefix: &cm_prefix "cm"
+
+      visualization_callback:
+        callback: VisualizationCallback
+        input_keys: *input_image_key
+        concat_images: True
+        denorm: "imagenet"
+
+#      benchmarking_callback:
+#        callback: BenchmarkingCallback
+#        filenames_key: *input_filename_key
+#        embeddings_key: *output_embedding_key
+#        input_key: *input_target_key
+#        output_key: *output_target_key
+#        label_key: *input_label_key
+##        save_dir: null
+#        test_cases: {
+#          "valid": "train",
+#          "doe_norm": [ "train", "valid" ],
+#          "doe_rotated": [ "train", "valid" ],
+#        }
+#        class_names: *class_names
+#        activation: "Softmax"
+#        benchmarking_plan_path: "/workspace/Datasets/CICO1.5/CICO 1.5 benchmarking_plan_v12_FINAL_Working Document v2.xlsx"
+
+  infer_cico10:
+    data_params:
+      dataset_path: "/workspace/Datasets/CICO1.0/OFR_no_food_modified/initial"
+    state_params:
+      num_epochs: 1
+
+    callbacks_params:
+      saver:
+        callback: CheckpointCallback
+        resume_dir: *logdir
+        resume: "checkpoints/best_full.pth"
+
+      embeddings_logger_callback:
+        callback: EmbeddingsLoggerCallback
+        filenames_key: *input_filename_key
+        embeddings_key: *output_embedding_key
+        input_key: *input_target_key
+        label_key: *input_label_key
+        output_key: *output_target_key
+        save_dir: "cico10"
+        activation: "Softmax"
+
+  infer_cico15:
+    data_params:
+      dataset_path: "/workspace/Datasets/CICO1.5/benchmarking_plan/v3"
+
+    state_params:
+      num_epochs: 1
+
+    callbacks_params:
+      saver:
+        callback: CheckpointCallback
+        resume_dir: *logdir
+        resume: "checkpoints/best_full.pth"
+
+      embeddings_logger_callback:
+        callback: EmbeddingsLoggerCallback
+        filenames_key: *input_filename_key
+        embeddings_key: *output_embedding_key
+        input_key: *input_target_key
+        label_key: *input_label_key
+        output_key: *output_target_key
+        save_dir: "cico15"
+        activation: "Softmax"
+
+  infer_doe_norm:
+    data_params:
+      dataset_path: "/workspace/Datasets/CICO1.5/benchmarking_plan/DoE_norm"
+
+    state_params:
+      num_epochs: 1
+
+    callbacks_params:
+      saver:
+        callback: CheckpointCallback
+        resume_dir: *logdir
+        resume: "checkpoints/best_full.pth"
+
+      embeddings_logger_callback:
+        callback: EmbeddingsLoggerCallback
+        filenames_key: *input_filename_key
+        embeddings_key: *output_embedding_key
+        input_key: *input_target_key
+        label_key: *input_label_key
+        output_key: *output_target_key
+        class_names: *class_names
+        database_path: &database_path "/home/smirnvla/PycharmProjects/catalyst-classification/logs/cico15_256_arcface_64_5e-1_radam_plateu_1e-0_l2neck_stratified/embeddings/cico15"
+        save_dir: "DoE_norm"
+        activation: "Softmax"
+
+  infer_doe_rotated:
+    data_params:
+      dataset_path: "/workspace/Datasets/CICO1.5/benchmarking_plan/DoE_rotated"
+
+    state_params:
+      num_epochs: 1
+
+    callbacks_params:
+      saver:
+        callback: CheckpointCallback
+        resume_dir: *logdir
+        resume: "checkpoints/best_full.pth"
+
+      embeddings_logger_callback:
+        callback: EmbeddingsLoggerCallback
+        filenames_key: *input_filename_key
+        embeddings_key: *output_embedding_key
+        input_key: *input_target_key
+        label_key: *input_label_key
+        output_key: *output_target_key
+        class_names: *class_names
+        database_path: *database_path
+        save_dir: "DoE_rotated"
+        activation: "Softmax"

@@ -3,8 +3,8 @@ import numpy as np
 
 from torch.utils.data.dataset import Dataset
 
-from .bengali import IMAGE_KEY, INPUT_KEYS
-from ..utils.utils import rand_bbox, to_one_hot
+from src.datasets.bengali import IMAGE_KEY, INPUT_KEYS
+from src.utils.utils import rand_bbox, to_one_hot
 
 
 class CutMixUpDataset(Dataset):

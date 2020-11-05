@@ -1,14 +1,18 @@
 # flake8: noqa
 # isort: skip_file
+import cv2
+
+import numpy as np
+
 import torch
 import torchvision.utils
 
 from catalyst.dl import Callback, CallbackOrder, State
-from catalyst.utils.tools.tensorboard import SummaryWriter
+from catalyst.contrib.tools.tensorboard import SummaryWriter
 
 
 class VisualizationCallback(Callback):
-    TENSORBOARD_LOGGER_KEY = "tensorboard"
+    TENSORBOARD_LOGGER_KEY = "_tensorboard"
 
     def __init__(
         self,
@@ -20,7 +24,7 @@ class VisualizationCallback(Callback):
         num_rows=5,
         denorm="default"
     ):
-        super().__init__(CallbackOrder.Other)
+        super(VisualizationCallback, self).__init__(CallbackOrder.External)
         if input_keys is None:
             self.input_keys = []
         elif isinstance(input_keys, str):
@@ -55,12 +59,14 @@ class VisualizationCallback(Callback):
 
         self.concat_images = concat_images
         self.max_images = max_images
+
+        # y = (x - mean) / std => x = y * std + mean
         if denorm.lower() == "default":
             # normalization from [-1, 1] to [0, 1] (the latter is valid for tb)
             self.denorm = lambda x: x * 2 + .5
-        elif denorm.lower() == "bengali":
+        elif denorm.lower() == "imagenet":
             # normalization from [-1, 1] to [0, 1] (the latter is valid for tb)
-            self.denorm = lambda x: x * 0.2051 + 0.0692
+            self.denorm = lambda x: x * 0.225 + 0.449
         elif denorm is None or denorm.lower() == "none":
             self.denorm = lambda x: x
         else:
@@ -76,10 +82,10 @@ class VisualizationCallback(Callback):
     def _get_tensorboard_logger(state: State) -> SummaryWriter:
         tb_key = VisualizationCallback.TENSORBOARD_LOGGER_KEY
         if (
-            tb_key in state.loggers
-            and state.loader_name in state.loggers[tb_key].loggers
+            tb_key in state.callbacks
+            and state.loader_name in state.callbacks[tb_key].loggers
         ):
-            return state.loggers[tb_key].loggers[state.loader_name]
+            return state.callbacks[tb_key].loggers[state.loader_name]
         raise RuntimeError(
             f"Cannot find Tensorboard logger for loader {state.loader_name}"
         )
@@ -108,6 +114,48 @@ class VisualizationCallback(Callback):
             )
         return visualizations
 
+    def put_text(self, img, text):
+
+        font_face = cv2.FONT_HERSHEY_SIMPLEX
+        position = (10, 10)
+        font_color = (255, 255, 255)
+        line_type = 2
+
+        cv2.putText(img=img, text=text,
+                    org=position, fontFace=font_face, fontScale=1,
+                    color=font_color, lineType=line_type)
+
+    def compute_visualizations2(self, state):
+        input_tensors = [
+            self.denorm(state.input[input_key])
+            for input_key in self.input_keys
+        ]
+        output_tensors = [
+            self.denorm(state.output[output_key])
+            for output_key in self.output_keys
+        ]
+
+        label_ids = state.input["targets"].detach().cpu()
+        labels = state.input["labels"]
+
+        for img, label_id, label in zip(
+                input_tensors, label_ids, labels):
+            self.put_text(img, f"{label_id}: {label}")
+
+        visualizations = dict()
+        if self.concat_images:
+            viz_name = "|".join(self.input_keys + self.output_keys)
+            viz_tensor = np.concatenate(input_tensors + output_tensors, axis=3)
+            visualizations[viz_name] = viz_tensor
+        else:
+            visualizations = dict(
+                (k, self.denorm(v)) for k, v in zip(
+                    self.input_keys + self.output_keys, input_tensors +
+                    output_tensors
+                )
+            )
+        return visualizations
+
     def save_visualizations(self, state, visualizations):
         tb_logger = self._get_tensorboard_logger(state)
         for key, batch_images in visualizations.items():
@@ -115,7 +163,7 @@ class VisualizationCallback(Callback):
             image = torchvision.utils.make_grid(
                 batch_images, nrow=self._num_rows
             )
-            tb_logger.add_image(key, image, global_step=state.step)
+            tb_logger.add_image(key, image, global_step=state.global_sample_step)
 
     def visualize(self, state):
         visualizations = self.compute_visualizations(state)
