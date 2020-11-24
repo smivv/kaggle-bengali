@@ -30,9 +30,35 @@ GLOBALS:
     'Unknown__Cookies',
     'Vegetables__Mediterranean_Vegetables'
   ]
+  class_names2: &class_names2 [
+    'Bread_and_Rolls__Baguette',
+    'Bread_and_Rolls__Rolls_frozen',
+    'Cake_and_Pastry__Muffins',
+    'No_Food__',
+    'Pizza__',
+    'Pizza_and_Quiche__Onion_Tart',
+    'Poultry__Chicken,_whole',
+    'Poultry__Chicken_legs',
+    'Poultry__Chicken_nuggets',
+    'Poultry__Chicken_wings',
+    'Side_dishes__Croquettes',
+    'Side_dishes__French_fries_frozen',
+    'Side_dishes__Wedges',
+    'Unknown__Cookies',
+    'Vegetables__Mediterranean_Vegetables',
+
+    'ApplePie',
+    'Cake',
+    'Lasagna',
+    'PotatoGratin',
+    'Preztel',
+    'Quiche',
+    'Vegetables',
+    'Zucchini'
+  ]
 
   model_name: &model_name "nasnetamobile"
-  logdir: &logdir "./logs/cico15_256_arcface_64_5e-1_radam_plateu_1e-0_l2neck_stratified_bench"
+  logdir: &logdir "./logs/cico15_256_arcface_64_5e-1_radam_plateu_1e-0_l2neck_stratified_doe"
 
   MAIN_METRIC: &MAIN_METRIC "_acc01"
   REDUCE_METRIC: &REDUCED_METRIC "loss"
@@ -155,8 +181,10 @@ stages:
 #    dataset_path: "/workspace/Datasets/CICO1.0/OFR_no_food_modified/initial"
     dataset_path: "/workspace/Datasets/CICO1.5/benchmarking_plan/v3"
     additional_paths: [
-      "/workspace/Datasets/CICO1.5/benchmarking_plan/DoE_norm",
-      "/workspace/Datasets/CICO1.5/benchmarking_plan/DoE_rotated",
+      "/workspace/Datasets/CICO1.5/benchmarking_plan/DoEv1_norm",
+      "/workspace/Datasets/CICO1.5/benchmarking_plan/DoEv1_rotated",
+      "/workspace/Datasets/CICO1.5/benchmarking_plan/DoEv2_norm",
+      "/workspace/Datasets/CICO1.5/benchmarking_plan/DoEv2_rotated",
     ]
 #    use_one_hot: True
     image_size: *image_size
@@ -208,36 +236,41 @@ stages:
         accuracy_args: [1, 3]
         activation: "Softmax"
 
-      confusion_matrix_callback:
-        callback: ConfusionMatrixCallback
-        input_key: *input_target_key
-        output_key: *output_target_key
-        num_classes: *num_classes
-        class_names: *class_names
-        prefix: &cm_prefix "cm"
+#      confusion_matrix_callback:
+#        callback: ConfusionMatrixCallback
+#        input_key: *input_target_key
+#        output_key: *output_target_key
+#        num_classes: *num_classes
+#        class_names: *class_names
+#        prefix: &cm_prefix "cm"
 
       visualization_callback:
         callback: VisualizationCallback
         input_keys: *input_image_key
         concat_images: True
-        denorm: "imagenet"
+        denorm_fn: "imagenet"
 
-#      benchmarking_callback:
-#        callback: BenchmarkingCallback
-#        filenames_key: *input_filename_key
+#      projector_callback:
+#        callback: ProjectorCallback
+#        image_key: *input_image_key
+#        labels_key: *input_label_key
 #        embeddings_key: *output_embedding_key
-#        input_key: *input_target_key
-#        output_key: *output_target_key
-#        label_key: *input_label_key
-##        save_dir: null
-#        test_cases: {
-#          "valid": "train",
-#          "doe_norm": [ "train", "valid" ],
-#          "doe_rotated": [ "train", "valid" ],
-#        }
-#        class_names: *class_names
-#        activation: "Softmax"
-#        benchmarking_plan_path: "/workspace/Datasets/CICO1.5/CICO 1.5 benchmarking_plan_v12_FINAL_Working Document v2.xlsx"
+#        denorm_fn: "imagenet"
+
+      doe_callback:
+        callback: DoECallback
+        target_key: *input_target_key
+        filename_key: *input_filename_key
+        embeddings_key: *output_embedding_key
+        class_names: *class_names2
+        train_loaders: ["train", "valid"]
+        test_loaders: [
+            "infer_DoEv1_norm",
+            "infer_DoEv1_rotated",
+            "infer_DoEv2_norm",
+            "infer_DoEv2_rotated"
+        ]
+        doe_path: "/workspace/Datasets/CICO1.5/benchmarking_plan/DoEv2_norm/DoE.xlsx"
 
   infer_cico10:
     data_params:

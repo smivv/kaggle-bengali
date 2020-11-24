@@ -5,8 +5,6 @@ import torch
 
 from torch.nn import CrossEntropyLoss, Module, functional as F
 
-from ..bengali.focal import FocalLossMultiClassFixed
-
 
 class L2Norm(Module):
     def __init__(self, p=2, dim=1):

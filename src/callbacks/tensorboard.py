@@ -1,186 +1,603 @@
 # flake8: noqa
 # isort: skip_file
-import cv2
-
-import numpy as np
+from typing import Tuple, List, Dict, Any, Union, Callable, Optional
+from functools import partial
 
 import torch
 import torchvision.utils
 
-from catalyst.dl import Callback, CallbackOrder, State
+import numpy as np
+
+from torch import Tensor
+from numpy import ndarray
+
+from skimage.color import label2rgb
+
+from catalyst.dl import Callback, CallbackOrder, CallbackNode, Runner
 from catalyst.contrib.tools.tensorboard import SummaryWriter
 
+import tensorflow as tf
+import tensorboard as tb
+tf.io.gfile = tb.compat.tensorflow_stub.io.gfile
 
-class VisualizationCallback(Callback):
+
+def encode_mask_with_color(
+        masks: ndarray,
+) -> ndarray:
+    """
+
+    Args:
+        masks (ndarray): semantic mask batch tensor
+    Returns:
+        ndarray: list of semantic masks
+
+    """
+    if masks.ndim == 3:
+        masks = np.concatenate([label2rgb(mask, bg_label=0) for mask in masks])
+    else:
+        masks = label2rgb(masks, bg_label=0)
+    return masks
+
+
+def mask_to_overlay_image(
+        image: ndarray,
+        mask: ndarray,
+        mask_strength: float
+) -> ndarray:
+    """
+
+    Args:
+        image (ndarray):
+        mask (ndarray):
+        mask_strength (float):
+
+    Returns (ndarray):
+
+    """
+    # mask = label2rgb(mask, bg_label=0)
+    # image_with_overlay = image * (1 - mask_strength) + mask * mask_strength
+    # image_with_overlay = (
+    #     (image_with_overlay * 255).clip(0, 255).round().astype(np.uint8)
+    # )
+    # color = [0, 255, 0]
+    color = np.asarray([0, 0, 255])
+
+    image_with_overlay = image.copy()
+    # image_with_overlay[mask == 0] = 0
+    image_with_overlay[mask != 0] = \
+        mask_strength * image[mask != 0] + (1 - mask_strength) * color
+
+    return image_with_overlay
+
+
+class TensorboardCallback(Callback):
     TENSORBOARD_LOGGER_KEY = "_tensorboard"
 
     def __init__(
-        self,
-        input_keys=None,
-        output_keys=None,
-        batch_frequency=25,
-        concat_images=True,
-        max_images=20,
-        num_rows=5,
-        denorm="default"
+            self,
+            input_keys: Optional[Union[str, List[str]]] = None,
+            output_keys: Optional[Union[str, List[str]]] = None,
+            batch_frequency: int = 40,
     ):
-        super(VisualizationCallback, self).__init__(CallbackOrder.External)
-        if input_keys is None:
-            self.input_keys = []
-        elif isinstance(input_keys, str):
-            self.input_keys = [input_keys]
-        elif isinstance(input_keys, (tuple, list)):
-            assert all(isinstance(k, str) for k in input_keys)
-            self.input_keys = list(input_keys)
-        else:
-            raise ValueError(
-                f"Unexpected format of 'input_keys' "
-                f"argument: must be string or list/tuple"
-            )
+        """
 
-        if output_keys is None:
-            self.output_keys = []
-        elif isinstance(output_keys, str):
-            self.output_keys = [output_keys]
-        elif isinstance(output_keys, (tuple, list)):
-            assert all(isinstance(k, str) for k in output_keys)
-            self.output_keys = list(output_keys)
-        else:
-            raise ValueError(
-                f"Unexpected format of 'output_keys' "
-                f"argument: must be string or list/tuple"
-            )
+        Args:
+            input_keys (Optional[Union[str, List[str]]]): Input keys.
+            output_keys (Optional[Union[str, List[str]]]): Output keys.
+            batch_frequency (int):
+                Frequency of process to be called (default=None).
+        """
+        super(TensorboardCallback, self).__init__(
+            order=CallbackOrder.External#, node=CallbackNode.master
+        )
+
+        assert batch_frequency is None or batch_frequency > 0
+
+        self.input_keys = TensorboardCallback._check_keys(input_keys)
+        self.output_keys = TensorboardCallback._check_keys(output_keys)
 
         if len(self.input_keys) + len(self.output_keys) == 0:
             raise ValueError("Useless visualizer: pass at least one image key")
 
-        self.batch_frequency = int(batch_frequency)
-        assert self.batch_frequency > 0
+        self._batch_frequency = batch_frequency
 
-        self.concat_images = concat_images
-        self.max_images = max_images
-
-        # y = (x - mean) / std => x = y * std + mean
-        if denorm.lower() == "default":
-            # normalization from [-1, 1] to [0, 1] (the latter is valid for tb)
-            self.denorm = lambda x: x * 2 + .5
-        elif denorm.lower() == "imagenet":
-            # normalization from [-1, 1] to [0, 1] (the latter is valid for tb)
-            self.denorm = lambda x: x * 0.225 + 0.449
-        elif denorm is None or denorm.lower() == "none":
-            self.denorm = lambda x: x
-        else:
-            raise ValueError("unknown denorm fn")
-        self._num_rows = num_rows
+        self._loader_batch_count = 0
+        self._loader_processed_in_current_epoch = False
         self._reset()
+
+    @staticmethod
+    def _check_keys(keys) -> List[str]:
+        if keys is None:
+            return []
+        elif isinstance(keys, str):
+            return [keys]
+        elif isinstance(keys, (tuple, list)):
+            assert all(isinstance(k, str) for k in keys)
+            return list(keys)
+        else:
+            raise ValueError(
+                f"Unexpected format of keys' "
+                f"argument: must be string or list/tuple"
+            )
 
     def _reset(self):
         self._loader_batch_count = 0
-        self._loader_visualized_in_current_epoch = False
+        self._loader_processed_in_current_epoch = False
 
     @staticmethod
-    def _get_tensorboard_logger(state: State) -> SummaryWriter:
+    def _detach(
+            tensors: Union[Tensor, List[Tensor]]
+    ) -> Union[ndarray, List[ndarray]]:
+        """
+        Detaches tensor from device.
+        
+        Args:
+            tensors (Union[Tensor, List[Tensor]]): Tensor to detach
+
+        Returns (Union[ndarray, List[ndarray]]): Data from detached tensor
+
+        """
+        if isinstance(tensors, list):
+            return [tensor.detach().cpu().numpy() for tensor in tensors]
+        else:
+            return tensors.detach().cpu().numpy()
+
+    @staticmethod
+    def _get_tensorboard_logger(runner: Runner) -> SummaryWriter:
+        """
+
+        Args:
+            runner:
+
+        Returns:
+
+        """
         tb_key = VisualizationCallback.TENSORBOARD_LOGGER_KEY
         if (
-            tb_key in state.callbacks
-            and state.loader_name in state.callbacks[tb_key].loggers
+                tb_key in runner.callbacks
+                and runner.loader_name in runner.callbacks[tb_key].loggers
         ):
-            return state.callbacks[tb_key].loggers[state.loader_name]
+            return runner.callbacks[tb_key].loggers[runner.loader_name]
         raise RuntimeError(
-            f"Cannot find Tensorboard logger for loader {state.loader_name}"
+            f"Cannot find Tensorboard logger for loader {runner.loader_name}"
         )
 
-    def compute_visualizations(self, state):
-        input_tensors = [
-            state.input[input_key] for input_key in self.input_keys
-        ]
-        output_tensors = [
-            state.output[output_key] for output_key in self.output_keys
-        ]
-        visualizations = dict()
-        if self.concat_images:
-            viz_name = "|".join(self.input_keys + self.output_keys)
-            viz_tensor = self.denorm(
-                # concat by width
-                torch.cat(input_tensors + output_tensors, dim=3)
-            ).detach().cpu()
-            visualizations[viz_name] = viz_tensor
+    def get_tensors(
+            self,
+            runner: Runner,
+            input_keys: List[str] = None,
+            output_keys: List[str] = None,
+    ) -> List[Tensor]:
+        """
+        Get tensors by their keys.
+        
+        Args:
+            runner (Runner): Runner class
+            input_keys (List[str]): Input keys strings
+            output_keys (List[str]): Output keys strings
+
+        Returns (List[Tensor]): List of tensors.
+
+        """
+        assert input_keys is not None or output_keys is not None
+        if input_keys:
+            return [runner.input[input_key] for input_key in input_keys]
         else:
-            visualizations = dict(
-                (k, self.denorm(v)) for k, v in zip(
-                    self.input_keys + self.output_keys, input_tensors +
-                    output_tensors
-                )
+            return [runner.output[output_key] for output_key in output_keys]
+
+    def preprocess(
+            self,
+            tensors: Union[Tensor, List[Tensor]]
+    ) -> Union[ndarray, List[ndarray]]:
+        """
+        Preprocess tensors.
+        
+        Args:
+            tensors (Union[Tensor, List[Tensor]]): Tensors to preprocess
+
+        Returns (Union[ndarray, List[ndarray]]): Data from tensors
+
+        """
+        return TensorboardCallback._detach(tensors)
+
+    def process(
+            self,
+            data: Dict[str, ndarray]
+    ) -> Dict[str, ndarray]:
+        """
+        Processes data.
+
+        Args:
+            data (Dict[str, ndarray]): Data to process
+
+        Returns (Dict[str, ndarray]): Processed data
+
+        """
+        return data
+
+    def postprocess(
+            self,
+            runner: Runner,
+            data: Dict[str, ndarray]
+    ):
+        """
+        Postprocessing function.
+
+        Args:
+            runner (Runner): Runner class
+            data (Dict[str, ndarray]): Data to postprocess
+
+        """
+        return data
+
+    def run(self, runner: Runner):
+        """
+        Run full pipeline of callback.
+
+        Args:
+            runner (Runner): Runner class
+
+        """
+        for key_set, key_values in {
+            "input_keys": self.input_keys,
+            "output_keys": self.output_keys
+        }.items():
+            if len(key_values) == 0:
+                continue
+
+            tensors: List[Tensor] = self.get_tensors(
+                runner=runner,
+                **{key_set: key_values}
             )
-        return visualizations
 
-    def put_text(self, img, text):
+            tensors: List[ndarray] = self.preprocess(tensors=tensors)
 
-        font_face = cv2.FONT_HERSHEY_SIMPLEX
-        position = (10, 10)
-        font_color = (255, 255, 255)
-        line_type = 2
-
-        cv2.putText(img=img, text=text,
-                    org=position, fontFace=font_face, fontScale=1,
-                    color=font_color, lineType=line_type)
-
-    def compute_visualizations2(self, state):
-        input_tensors = [
-            self.denorm(state.input[input_key])
-            for input_key in self.input_keys
-        ]
-        output_tensors = [
-            self.denorm(state.output[output_key])
-            for output_key in self.output_keys
-        ]
-
-        label_ids = state.input["targets"].detach().cpu()
-        labels = state.input["labels"]
-
-        for img, label_id, label in zip(
-                input_tensors, label_ids, labels):
-            self.put_text(img, f"{label_id}: {label}")
-
-        visualizations = dict()
-        if self.concat_images:
-            viz_name = "|".join(self.input_keys + self.output_keys)
-            viz_tensor = np.concatenate(input_tensors + output_tensors, axis=3)
-            visualizations[viz_name] = viz_tensor
-        else:
-            visualizations = dict(
-                (k, self.denorm(v)) for k, v in zip(
-                    self.input_keys + self.output_keys, input_tensors +
-                    output_tensors
-                )
+            data: Dict[str, ndarray] = self.process(
+                data={k: v for k, v in zip(key_values, tensors)}
             )
-        return visualizations
 
-    def save_visualizations(self, state, visualizations):
-        tb_logger = self._get_tensorboard_logger(state)
-        for key, batch_images in visualizations.items():
-            batch_images = batch_images[:self.max_images]
-            image = torchvision.utils.make_grid(
-                batch_images, nrow=self._num_rows
-            )
-            tb_logger.add_image(key, image, global_step=state.global_sample_step)
+            self.postprocess(runner=runner, data=data)
 
-    def visualize(self, state):
-        visualizations = self.compute_visualizations(state)
-        self.save_visualizations(state, visualizations)
-        self._loader_visualized_in_current_epoch = True
+        self._loader_processed_in_current_epoch = True
 
-    def on_loader_start(self, state: State):
+    def on_loader_start(self, runner: Runner):
+        """
+        Performs action on loader start.
+
+        Args:
+            runner (Runner): Runner class
+
+        """
         self._reset()
 
-    def on_loader_end(self, state: State):
-        if not self._loader_visualized_in_current_epoch:
-            self.visualize(state)
+    def on_batch_end(self, runner: Runner):
+        """
+        Performs action on batch end.
 
-    def on_batch_end(self, state: State):
+        Args:
+            runner (Runner): Runner class
+
+        """
         self._loader_batch_count += 1
-        if self._loader_batch_count % self.batch_frequency:
-            self.visualize(state)
+
+        if self._batch_frequency is None:
+            self.run(runner=runner)
+        elif self._loader_batch_count % self._batch_frequency:
+            self.run(runner=runner)
+
+    def on_loader_end(self, runner: Runner):
+        """
+        Performs action on loader end.
+
+        Args:
+            runner (Runner): Runner class
+
+        """
+        if not self._loader_processed_in_current_epoch:
+            self.run(runner)
 
 
-__all__ = ["VisualizationCallback"]
+class VisualizationCallback(TensorboardCallback):
+
+    def __init__(
+            self,
+            concat_images: bool = True,
+            max_images: int = 20,
+            num_rows: int = 5,
+            denorm_fn: str = "default",
+            *args,
+            **kwargs
+    ):
+        super(VisualizationCallback, self).__init__(*args, **kwargs)
+
+        self._concat_images = concat_images
+        self._max_images = max_images
+        self._num_rows = num_rows
+
+        self._denorm_fn = VisualizationCallback._get_denorm_fn(denorm_fn)
+
+    @staticmethod
+    def _get_denorm_fn(fn_name) -> Callable:
+        # y = (x - mean) / std => x = y * std + mean
+        if fn_name.lower() == "default":
+            # normalization from [-1, 1] to [0, 1]
+            return lambda x: x * 2 + .5
+        elif fn_name.lower() == "imagenet":
+            return lambda x: x * 0.225 + 0.449
+        elif fn_name is None or fn_name.lower() == "none":
+            return lambda x: x
+        else:
+            raise ValueError("Unknown `denorm_fn`")
+
+    def preprocess(
+            self,
+            tensors: Union[Tensor, List[Tensor]]
+    ) -> Union[ndarray, List[ndarray]]:
+        """
+        Preprocess tensors.
+
+        Args:
+            tensors (Union[Tensor, List[Tensor]]): Tensors to preprocess
+
+        Returns (Union[Tensor, List[Tensor]]): Data from tensors
+
+        """
+        if isinstance(tensors, list):
+            return [
+                self._denorm_fn(tensor)
+                if isinstance(tensor, ndarray) or isinstance(tensor, Tensor)
+                else tensor for tensor in tensors
+            ]
+        else:
+            return self._denorm_fn(tensors) \
+                if isinstance(tensors, ndarray) or isinstance(tensors, Tensor) \
+                else tensors
+
+    def postprocess(
+            self,
+            runner: Runner,
+            data: Dict[str, ndarray]
+    ):
+        """
+        Postprocessing function.
+
+        Args:
+            runner (Runner): Runner class
+            data (Dict[str, ndarray]): Data to postprocess
+
+        """
+        tb_logger = self._get_tensorboard_logger(runner)
+
+        for key, images in data.items():
+            images = images[:self._max_images]
+            image = torchvision.utils.make_grid(images, nrow=self._num_rows)
+            tb_logger.add_image(key, image, runner.global_sample_step)
+
+    def run(self, runner: Runner):
+        """
+        Run full pipeline of callback.
+
+        Args:
+            runner (Runner): Runner class
+
+        """
+        for key_set, key_values in {
+            "input_keys": self.input_keys,
+            "output_keys": self.output_keys
+        }.items():
+            if len(key_values) == 0:
+                continue
+
+            tensors: List[Tensor] = self.get_tensors(
+                runner=runner,
+                **{key_set: key_values}
+            )
+
+            if self._concat_images:
+                tensors: Tensor = torch.cat(tensors, dim=3)
+
+            tensors: Union[ndarray, List[ndarray]] = self.preprocess(tensors)
+
+            if self._concat_images:
+                data: Dict[str, ndarray] = self.process(
+                    data={f"{'|'.join(key_values)}": tensors}
+                )
+            else:
+                data: Dict[str, ndarray] = self.process(
+                    data={k: v for k, v in zip(key_values, tensors)}
+                )
+
+            self.postprocess(runner=runner, data=data)
+
+        self._loader_processed_in_current_epoch = True
+
+
+class MaskVisualizationCallback(VisualizationCallback):
+    def __init__(
+            self,
+            mask_key: str,
+            image_key: str = None,
+            threshold: float = 0.5,
+            mode: str = "image_with_mask",
+            mask_strength: float = 0.5,
+            *args,
+            **kwargs
+    ):
+        super(MaskVisualizationCallback, self).__init__(
+            input_keys=image_key,
+            output_keys=mask_key,
+            *args,
+            **kwargs
+        )
+
+        assert mode in ["mask", "image_with_mask"]
+
+        if mode == "image_with_mask" and image_key is None:
+            raise ValueError("Image key should be passed if 'image_with_mask' "
+                             "was chosen")
+
+        self.mask_strength = mask_strength
+        self.mode = mode
+
+        self.mask_denorm_fn = partial(encode_mask_with_color,
+                                      threshold=threshold)
+
+    def preprocess_mask(
+            self,
+            tensors: Union[Tensor, List[Tensor]]
+    ) -> ndarray:
+        """
+
+        Args:
+            tensors:
+
+        Returns:
+
+        """
+        return VisualizationCallback._detach(self.mask_denorm_fn(tensors))
+
+    def process(
+            self,
+            tensors: Dict[str, ndarray]
+    ) -> Dict[str, ndarray]:
+        """
+
+        Args:
+            tensors:
+
+        Returns:
+
+        """
+        return super(MaskVisualizationCallback, self).process({
+            "mask_overlay_to_image": mask_to_overlay_image(
+                image=tensors[self.input_keys[0]],
+                mask=tensors[self.output_keys[0]],
+                mask_strength=self.mask_strength
+            )
+        })
+
+    def visualize(self, runner: Runner):
+        """
+
+        Args:
+            runner:
+
+        Returns:
+
+        """
+        if self.mode == "image_with_mask":
+            image_tensor: List[Tensor] = \
+                self.get_tensors(runner, self.input_keys)
+            mask_tensor: List[Tensor] = \
+                self.get_tensors(runner, self.output_keys)
+
+            if self._concat_images:
+                image_tensor: Tensor = torch.cat(image_tensor, dim=3)
+                mask_tensor: Tensor = torch.cat(mask_tensor, dim=3)
+
+            image_tensor: ndarray = self.preprocess(image_tensor)
+            mask_tensor: ndarray = self.preprocess_mask(mask_tensor)
+
+            visualizations = self.process({
+                k: v for k, v in zip(self.input_keys + self.output_keys,
+                                     image_tensor + mask_tensor)}
+            )
+
+            self.postprocess(runner, visualizations)
+
+            self._loader_visualized_in_current_epoch = True
+        else:
+            super(MaskVisualizationCallback, self).run(runner)
+
+
+class ProjectorCallback(VisualizationCallback):
+
+    def __init__(
+            self,
+            image_key: str,
+            labels_key: str,
+            embeddings_key: str,
+            *args,
+            **kwargs,
+    ):
+        """
+
+        Args:
+            image_key (str): Image key to build sprite.
+            embeddings_key (str): Embeddings key to save to projector.
+        """
+        super(ProjectorCallback, self).__init__(
+            input_keys=[image_key, labels_key],
+            output_keys=embeddings_key,
+            *args,
+            **kwargs
+        )
+
+        self.image_key = image_key
+        self.labels_key = labels_key
+        self.embeddings_key = embeddings_key
+
+    def postprocess(
+            self,
+            runner: Runner,
+            data: Dict[str, ndarray]
+    ):
+        """
+        Postprocessing function.
+
+        Args:
+            runner (Runner): Runner class
+            data (Dict[str, ndarray]): Data to postprocess
+
+        """
+        tb_logger: SummaryWriter = self._get_tensorboard_logger(runner)
+
+        images = data[self.image_key]
+        labels: List = data[self.labels_key]
+        embeddings = data[self.embeddings_key]
+
+        tb_logger.add_embedding(
+            mat=embeddings,
+            metadata=labels,
+            label_img=images,
+            global_step=runner.global_sample_step
+        )
+
+    def run(self, runner: Runner):
+        """
+        Run full pipeline of callback.
+
+        Args:
+            runner (Runner): Runner class
+
+        """
+        data: Dict[str, ndarray] = {}
+        for key_set, key_values in {
+            "input_keys": self.input_keys,
+            "output_keys": self.output_keys
+        }.items():
+            if len(key_values) == 0:
+                continue
+
+            tensors: List[Tensor] = self.get_tensors(
+                runner=runner, **{key_set: key_values}
+            )
+
+            tensors: List[ndarray] = self.preprocess(tensors=tensors)
+
+            data.update(
+                self.process(
+                    data={k: v for k, v in zip(key_values, tensors)}
+                )
+            )
+
+        self.postprocess(runner=runner, data=data)
+
+        self._loader_processed_in_current_epoch = True
+
+
+__all__ = [
+    "ProjectorCallback",
+    "VisualizationCallback",
+    "MaskVisualizationCallback"
+]

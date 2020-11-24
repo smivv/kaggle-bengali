@@ -250,9 +250,3 @@ class EmbeddingsLoggerCallback(Callback):
                 data[key] += loader_values[key]
 
         self._save_excel(data, save_to, "data")
-
-        # labels = self.data[runner.loader_name][LABELS_KEY]
-        # result = {k: 0 for k in range(15)}
-        # for l in labels:
-        #     result[l] += 1
-        # print(result)

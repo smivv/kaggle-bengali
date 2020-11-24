@@ -42,6 +42,15 @@ class Experiment(ConfigExperiment):
             )
         }
 
+        for key, dataset in datasets.items():
+            if "infer" in key:
+                datasets[key] = {
+                    "dataset": datasets[key],
+                    "shuffle": False,
+                    "drop_last": False
+                }
+
+        # Infer stage
         if stage.startswith("infer"):
             datasets["infer_train"] = datasets["train"]
             del datasets["train"]

@@ -70,7 +70,11 @@ class CICODataset(Dataset):
             image = self.transforms(image=image)["image"]
 
         label = path.parent.name
-        target = self.label_ids[label]
+
+        if label not in self.label_ids:
+            target = 0
+        else:
+            target = self.label_ids[label]
 
         if self.use_one_hot:
             target = to_one_hot(target, self.num_classes)
@@ -148,7 +152,7 @@ def get_datasets(
     if additional_paths is not None:
         for path in additional_paths:
             path = Path(path)
-            datasets["infer_" + path.name.lower()] = CICODataset(
+            datasets["infer_" + path.name] = CICODataset(
                 images=get_data(path),
                 label_ids=label_ids,
                 transforms=transforms["infer"],

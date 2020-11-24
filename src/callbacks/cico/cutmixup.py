@@ -1,10 +1,10 @@
-from typing import List
-
-import numpy as np
+from typing import List, Dict, Tuple, Optional, Union
 
 import torch
 
-from catalyst.dl import CriterionCallback, State
+import numpy as np
+
+from catalyst.dl import CriterionCallback, Runner
 
 
 class CutMixUpCallback(CriterionCallback):
@@ -17,7 +17,7 @@ class CutMixUpCallback(CriterionCallback):
             alpha: float = 1.0,
             prob: float = 0.5,
             on_train_only: bool = True,
-            weights: List[float] = None,
+            weights: Optional[List[float]] = None,
             method: str = "both",
             method_prob: float = 0.5,
             **kwargs
@@ -26,8 +26,8 @@ class CutMixUpCallback(CriterionCallback):
         Cutmix & Mixup callback.
 
         Args:
-            fields (List[str]): list of features which must be affected.
-            alpha (float): beta distribution a=b parameters.
+            fields (List[str]): List of features which must be affected.
+            alpha (float): Beta distribution a=b parameters.
                 Must be >=0. The more alpha closer to zero
                 the less effect of the mixup.
             prob (float): Probability to call one of augmentations.
@@ -45,148 +45,242 @@ class CutMixUpCallback(CriterionCallback):
 
         assert len(fields) > 0, \
             "At least one field for CutMixUpCallback is required"
-        assert alpha >= 0, "alpha must be >= 0"
 
-        self.fields: List[str] = fields
-        self.alpha: float = alpha
-        self.prob: float = prob
-        self.on_train_only: bool = on_train_only
+        assert alpha >= 0, \
+            "alpha must be >= 0"
 
-        self.lam = None
-        self.is_needed = True
-        self.method_prob = method_prob
-        self.weights = weights
+        assert method in ["mixup", "cutmix", "both"], \
+            "method should be one of mixup, cutmix or both"
+
+        self._fields: List[str] = fields
+        self._alpha: float = alpha
+        self._prob: float = prob
+        self._on_train_only: bool = on_train_only
+
+        self._lambda: Optional[np.ndarray] = None
+        self._to_augment: bool = True
+        self._method_prob = method_prob
+        self._weights: List[float] = weights
 
         if method == "mixup":
-            self.augment_fn = self.do_mixup
+            self._augment_fn = self._do_mixup
         elif method == "cutmix":
-            self.augment_fn = self.do_cutmix
+            self._augment_fn = self._do_cutmix
         elif method == "both":
-            self.augment_fn = self.do_both
+            self._augment_fn = self._do_both
 
-        self.batch_size = None
-        self.width = None
-        self.height = None
+        self._batch_size = None
+        self._height = None
+        self._width = None
 
-        self.probs = None
-        self.permutations = None
+        self._permuts = None
+        self._probs = None
 
-    def on_loader_start(self, state: State):
-        self.is_needed = not self.on_train_only or \
-                         state.loader_name.startswith("train")
+    def _random_boxes(
+            self,
+            lam: Union[np.ndarray, int],
+            width: int,
+            height: int
+    ) -> Tuple[Union[np.ndarray, int], Union[np.ndarray, int],
+               Union[np.ndarray, int], Union[np.ndarray, int]]:
+        """
+        Generates random baounding boxes.
 
-    def _rand_bbox(self, lam, width, height):
-        cut_rat = np.sqrt(1. - lam)
-        cut_w = (width * cut_rat).astype(np.int)
-        cut_h = (height * cut_rat).astype(np.int)
-        # uniform
-        cx = np.random.randint(width)
-        cy = np.random.randint(height)
-        left = np.clip(cx - cut_w // 2, 0, width)
-        right = np.clip(cx + cut_w // 2, 0, width)
-        top = np.clip(cy - cut_h // 2, 0, height)
-        bottom = np.clip(cy + cut_h // 2, 0, height)
+        Args:
+            lam (np.ndarray): Array of lambdas.
+            width (int): Width of image.
+            height (int): Height of image.
+
+        Returns (Tuple[Union[np.ndarray, int], Union[np.ndarray, int],
+                  Union[np.ndarray, int], Union[np.ndarray, int]]):
+            Tuple of Left, Top, Right and Bottom coordinates.
+
+        """
+
+        cut_rat: np.ndarray = np.sqrt(1. - lam)
+
+        cut_w: np.ndarray = (width * cut_rat).astype(np.int)
+        cut_h: np.ndarray = (height * cut_rat).astype(np.int)
+
+        # uniformly distributed
+        cx: np.ndarray = np.random.randint(width)
+        cy: np.ndarray = np.random.randint(height)
+
+        left: np.ndarray = np.clip(cx - cut_w // 2, 0, width)
+        top: np.ndarray = np.clip(cy - cut_h // 2, 0, height)
+        right: np.ndarray = np.clip(cx + cut_w // 2, 0, width)
+        bottom: np.ndarray = np.clip(cy + cut_h // 2, 0, height)
+
         return left, top, right, bottom
 
-    def do_mixup(self, state: State):
-        for f in self.fields:
-            obj = state.input[f]
-            for i in range(self.batch_size):
-                if self.probs[i] < self.prob:
-                    obj[i] = self.lam[i] * obj[i] + \
-                             (1 - self.lam[i]) * obj[self.permutations[i]]
-                else:
-                    self.lam[i] = 1
+    def _do_mixup(self, runner: Runner):
+        """
+        Do mixup augmentation.
 
-    def do_cutmix(self, state: State):
-        for f in self.fields:
-            obj = state.input[f]
-            for i in range(self.batch_size):
-                if self.probs[i] < self.prob:
-                    l, t, r, b = self._rand_bbox(
-                        self.lam[i], self.width, self.height)
-                    obj[i, :, t:b, l:r] = obj[self.permutations[i], :, t:b, l:r]
-                    self.lam[i] = 1 - float((r - l) * (b - t)) / (
-                            self.height * self.width)
-                else:
-                    self.lam[i] = 1
+        Args:
+            runner (Runner): Runner class.
 
-    def do_both(self, state: State):
-        for f in self.fields:
-            obj = state.input[f]
-            for i in range(self.batch_size):
-                if self.probs[i] < self.prob:
-                    if np.random.rand() < self.method_prob:
-                        l, t, r, b = self._rand_bbox(
-                            self.lam[i], self.width, self.height)
-                        obj[i, :, t:b, l:r] = obj[self.permutations[i], :, t:b, l:r]
-                        self.lam[i] = 1 - float((r - l) * (b - t)) / \
-                                      (self.height * self.width)
+        """
+        for f in self._fields:
+            batch = runner.input[f]
+            for i in range(self._batch_size):
+                if self._probs[i] < self._prob:
+                    batch[i] = self._lambda[i] * batch[i] + \
+                               (1 - self._lambda[i]) * batch[self._permuts[i]]
+                else:
+                    self._lambda[i] = 1
+
+    def _do_cutmix(self, runner: Runner):
+        """
+        Do cutmix augmentation.
+
+        Args:
+            runner (Runner): Runner class.
+
+        """
+        for f in self._fields:
+            batch = runner.input[f]
+
+            for i in range(self._batch_size):
+                if self._probs[i] < self._prob:
+                    # generate random bbox
+                    l, t, r, b = self._random_boxes(
+                        lam=self._lambda[i],
+                        width=self._width,
+                        height=self._height
+                    )
+                    # erase it and put in current
+                    batch[i, :, t:b, l:r] = \
+                        batch[self._permuts[i], :, t:b, l:r]
+
+                    self._lambda[i] = 1 - float((r - l) * (b - t)) / \
+                                      (self._height * self._width)
+                else:
+                    self._lambda[i] = 1
+
+    def _do_both(self, runner: Runner):
+        """
+        Do both augmentations together.
+
+        Args:
+            runner (Runner): Runner class.
+
+        """
+        for f in self._fields:
+            batch = runner.input[f]
+            for i in range(self._batch_size):
+                if self._probs[i] < self._prob:
+                    if np.random.rand() < self._method_prob:
+                        # generate random bbox
+                        l, t, r, b = self._random_boxes(
+                            lam=self._lambda[i],
+                            width=self._width,
+                            height=self._height
+                        )
+                        # erase it and put in current
+                        batch[i, :, t:b, l:r] = \
+                            batch[self._permuts[i], :, t:b, l:r]
+
+                        self._lambda[i] = 1 - float((r - l) * (b - t)) / \
+                                          (self._height * self._width)
                     else:
-                        obj[i] = self.lam[i] * obj[i] + \
-                                 (1 - self.lam[i]) * obj[self.permutations[i]]
+                        batch[i] = self._lambda[i] * batch[i] + \
+                                   (1 - self._lambda[i]) * batch[
+                                       self._permuts[i]]
                 else:
-                    self.lam[i] = 1
+                    self._lambda[i] = 1
 
-    def on_batch_start(self, state: State):
+    def _compute_loss(self, runner: Runner, criterion) -> torch.Tensor:
+        """
+        Overloaded _compute_loss function for parent class.
 
-        if not self.is_needed:
-            return
+        Args:
+            runner (Runner): Runner class.
+            criterion (Criterion): Criterion class.
 
-        shape = state.input[self.fields[0]].shape
-        self.batch_size = shape[0]
-        self.height = shape[-2]
-        self.width = shape[-1]
+        Returns (torch.Tensor): Loss value.
 
-        if self.alpha > 0:
-            self.lam = np.random.beta(
-                a=self.alpha,
-                b=self.alpha,
-                size=self.batch_size
-            )
-        else:
-            self.lam = np.ones(size=self.batch_size)
-
-        self.permutations = np.random.permutation(self.batch_size)
-        self.probs = np.random.rand(self.batch_size)
-
-        if CutMixUpCallback.LAMBDA_INPUT_KEY not in state.input or \
-                CutMixUpCallback.PERMUT_INPUT_KEY not in state.input:
-            self.augment_fn(state)
-            state.input[CutMixUpCallback.LAMBDA_INPUT_KEY] = self.lam
-            state.input[CutMixUpCallback.PERMUT_INPUT_KEY] = self.permutations
-
-    def _compute_loss(self, state: State, criterion):
+        """
         losses = []
-        if self.is_needed:
-            if CutMixUpCallback.LAMBDA_INPUT_KEY not in state.input or \
-                    CutMixUpCallback.PERMUT_INPUT_KEY not in state.input:
-                raise ValueError("Lambda and permuts not found in state input!")
+        if self._to_augment:
+            if CutMixUpCallback.LAMBDA_INPUT_KEY not in runner.input or \
+                    CutMixUpCallback.PERMUT_INPUT_KEY not in runner.input:
+                raise ValueError(
+                    "Lambda and permuts not found in runner input!")
 
-            self.lam = state.input[CutMixUpCallback.LAMBDA_INPUT_KEY]
-            self.lam = torch.tensor(self.lam, requires_grad=False,
-                                    dtype=torch.float, device=state.device)
-
-            self.permutations = state.input[CutMixUpCallback.PERMUT_INPUT_KEY]
-            # self.perm = torch.tensor(self.perm, requires_grad=False,
-            #                          dtype=torch.float, device=state.device)
+            self._permuts = runner.input[CutMixUpCallback.PERMUT_INPUT_KEY]
+            self._lambda = runner.input[CutMixUpCallback.LAMBDA_INPUT_KEY]
+            self._lambda = torch.tensor(
+                data=self._lambda,
+                requires_grad=False,
+                dtype=torch.float,
+                device=runner.device
+            )
 
             for input_key, output_key in zip(self.input_key, self.output_key):
-                pred = state.output[output_key]
-                y_a = state.input[input_key]
-                y_b = state.input[input_key][self.permutations]
-                # losses.append((self.lam * criterion(pred, y_a) +
-                #                (1 - self.lam) * criterion(pred, y_b)).mean())
-                losses.append(((1 - self.lam) * criterion(pred, y_a) +
-                                self.lam * criterion(pred, y_b)).mean())
+                pred = runner.output[output_key]
+                y_a = runner.input[input_key]
+                y_b = runner.input[input_key][self._permuts]
+                losses.append(
+                    ((1 - self._lambda) * criterion(pred, y_a) +
+                     self._lambda * criterion(pred, y_b)).mean()
+                )
         else:
             for input_key, output_key in zip(self.input_key, self.output_key):
-                pred = state.output[output_key]
-                target = state.input[input_key]
+                pred = runner.output[output_key]
+                target = runner.input[input_key]
                 losses.append(criterion(pred, target))
 
-        if self.weights is not None:
-            s = sum([l * w for l, w in zip(losses, self.weights)])
+        if self._weights is not None:
+            s = sum([l * w for l, w in zip(losses, self._weights)])
         else:
             s = sum(losses)
+
         return s
+
+    def on_loader_start(self, runner: Runner):
+        """
+        Perform action on loader start event.
+
+        Args:
+            runner (Runner): Runner class.
+
+        """
+        self._to_augment = not self._on_train_only or \
+                           runner.loader_name.startswith("train")
+
+    def on_batch_start(self, runner: Runner):
+        """
+        Perform action on batch start event.
+
+        Args:
+            runner (Runner): Runner class.
+
+        """
+        if not self._to_augment:
+            return
+
+        shape = runner.input[self._fields[0]].shape
+
+        self._batch_size = shape[0]
+        self._height = shape[-2]
+        self._width = shape[-1]
+
+        if self._alpha > 0:
+            self._lambda = np.random.beta(
+                a=self._alpha,
+                b=self._alpha,
+                size=self._batch_size
+            )
+        else:
+            self._lambda = np.ones(size=self._batch_size)
+
+        self._permuts = np.random.permutation(self._batch_size)
+        self._probs = np.random.rand(self._batch_size)
+
+        if CutMixUpCallback.LAMBDA_INPUT_KEY not in runner.input or \
+                CutMixUpCallback.PERMUT_INPUT_KEY not in runner.input:
+            self._augment_fn(runner)
+
+            runner.input[CutMixUpCallback.LAMBDA_INPUT_KEY] = self._lambda
+            runner.input[CutMixUpCallback.PERMUT_INPUT_KEY] = self._permuts

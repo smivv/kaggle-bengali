@@ -43,7 +43,7 @@ def save_metadata(embeddings, embeddings_dir, limit=1000):
         sess.run(embedding_var.initializer)
 
         config = projector.ProjectorConfig()
-        embedding = config.embeddings.add()
+        embedding = config.train_embeddings.add()
         embedding.tensor_name = embedding_var.name
 
         # Add metadata to the log
