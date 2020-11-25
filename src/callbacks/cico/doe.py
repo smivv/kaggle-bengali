@@ -7,6 +7,7 @@ import torch.distributed  # noqa: WPS301
 import numpy as np
 import pandas as pd
 
+from time import time
 from scipy.stats import mode
 from pathlib import Path
 
@@ -35,6 +36,7 @@ class DoECallback(Callback):
         self.embeddings_key = embeddings_key
 
         self.class_names = {i: name for i, name in enumerate(class_names)}
+        self.class_ids = {name: i for i, name in enumerate(class_names)}
 
         self.train_loaders = train_loaders
         self.test_loaders = test_loaders
@@ -157,11 +159,10 @@ class DoECallback(Callback):
 
     def on_loader_end(self, runner: "IRunner"):
 
-        if "DoEv1" not in runner.loader_name or \
-                "DoEv2" not in runner.loader_name:
+        if runner.loader_name not in self.test_loaders:
             return
 
-        doe_name = runner.loader_name.replace("infer_", "")
+        doe_name = runner.loader_name.replace("extra_", "")
 
         metrics = {
             "All": 0,
@@ -174,24 +175,34 @@ class DoECallback(Callback):
 
         if "DoEv1" in runner.loader_name:
 
-            train_embeddings = np.array(self.train_embeddings)
-            test_embeddings = np.array(self.test_embeddings)
-            train_targets = np.array(self.train_targets)
-            test_targets = np.array(self.test_targets)
+            self.train_embeddings = np.array(self.train_embeddings)
+            self.test_embeddings = np.array(self.test_embeddings)
+            self.train_targets = np.array(self.train_targets)
+            self.test_targets = np.array(self.test_targets)
 
-            for embedding, target in zip(test_embeddings, test_targets):
+            index = faiss.IndexFlatIP(self.train_embeddings.shape[1])
+            index.add(self.train_embeddings)
+
+            length = len(self.test_embeddings)
+
+            for i, (embedding, target) in enumerate(zip(
+                    self.test_embeddings, self.test_targets)):
+
+                start = time()
+
                 results: List[Dict] = self._knn(
-                    all_embeddings=train_embeddings,
-                    all_targets=train_targets,
+                    all_embeddings=self.train_embeddings,
+                    all_targets=self.train_targets,
                     embedding=embedding,
+                    index=index,
                     top_k=3,
                     k=1
                 )
 
-                captions = [r["caption"] for r in results]
+                targets = [r["target"] for r in results]
 
                 try:
-                    position = captions.index(target) + 1
+                    position = targets.index(target) + 1
 
                     metrics["Recognized"] += 1
                     metrics[f"Top{position}"] += 1
@@ -200,42 +211,65 @@ class DoECallback(Callback):
 
                 metrics["All"] += 1
 
+                end = time()
+
+                print(f"Processed {i + 1}/{length} for {(end - start):.1f}s")
+
         elif "DoEv2" in runner.loader_name:
 
-            test_filenames = {f: i for i, f in enumerate(self.test_filenames)}
+            self.test_filenames = \
+                {f: i for i, f in enumerate(self.test_filenames)}
 
-            for caption, df in self.dfs.items():
+            self.train_embeddings = np.array(self.train_embeddings)
+            self.test_embeddings = np.array(self.test_embeddings)
+            self.train_targets = np.array(self.train_targets)
 
-                if caption not in self.class_names:
-                    self.class_names[len(self.class_names)] = caption
+            index1 = faiss.IndexFlatIP(self.train_embeddings.shape[1])
+            index1.add(self.train_embeddings)
+
+            length = len(self.dfs)
+
+            for i, (caption, df) in enumerate(self.dfs.items()):
+
+                start = time()
+
+                if caption not in self.class_ids:
+                    t = len(self.class_names)
+                    print(f"Add Classname {t}:{caption}")
+                    self.class_names[t] = caption
+                    self.class_ids[caption] = t
+
+                target = self.class_ids[caption]
 
                 def iname(index):
-                    return f"{caption}({index}).jpg"
+                    return f"{caption}({index})"
 
-                for i, row in df.iterrows():
-                    train_indcs = [
-                        test_filenames[iname(s)]
+                for _, row in df.iterrows():
+                    train_indcs = np.array([
+                        self.test_filenames[iname(s)]
                         for s in str(row["Train Images"]).split(",")
-                    ]
-                    test_idx = test_filenames[iname(row["Test Images"])]
+                    ])
+                    test_idx = self.test_filenames[iname(row["Test Images"])]
 
-                    results: List[Dict] = self._knn(
-                        all_embeddings=np.array(
-                            self.train_embeddings +
-                            [self.test_embeddings[idx] for idx in train_indcs]
-                        ),
-                        all_targets=np.array(
-                            self.train_targets + [caption]
-                        ),
+                    results: List[Dict] = sorted(self._knn(
+                        index=index1,
+                        all_embeddings=self.train_embeddings,
+                        all_targets=self.train_targets,
                         embedding=self.test_embeddings[test_idx],
                         top_k=3,
                         k=1
-                    )
+                    ) + self._knn(
+                        all_embeddings=self.test_embeddings[train_indcs],
+                        all_targets=np.array([target] * len(train_indcs)),
+                        embedding=self.test_embeddings[test_idx],
+                        top_k=1,
+                        k=1
+                    ), key=lambda x: x["distance"])[:3]
 
-                    captions = [r["caption"] for r in results]
+                    targets = [r["target"] for r in results]
 
                     try:
-                        position = captions.index(caption) + 1
+                        position = targets.index(target) + 1
 
                         metrics["Recognized"] += 1
                         metrics[f"Top{position}"] += 1
@@ -244,13 +278,15 @@ class DoECallback(Callback):
 
                     metrics["All"] += 1
 
+                end = time()
+
+                print(f"Processed {i + 1}/{length} for {(end - start):.1f}s")
+
+        result = {}
         for k, v in metrics.items():
             if k == "All":
                 continue
-            metrics[f"{doe_name}_{k}"] = metrics[k] / metrics['All']
-            del metrics[k]
+            result[f"{doe_name}_{k}"] = metrics[k] / metrics['All']
 
-        del metrics["All"]
-
-        runner.loader_metrics.update(**metrics)
-        # runner.epoch_metrics.update(**metrics)
+        # runner.loader_metrics.update(**metrics)
+        runner.epoch_metrics.update(**result)

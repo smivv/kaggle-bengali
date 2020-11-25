@@ -59,6 +59,8 @@ class CICODataset(Dataset):
         self.num_classes = len(class_names)
 
     def __len__(self):
+        # if len(self.images) > 1000:
+        #     return 1000
         return len(self.images)
 
     def get_item(self, idx):
@@ -152,7 +154,7 @@ def get_datasets(
     if additional_paths is not None:
         for path in additional_paths:
             path = Path(path)
-            datasets["infer_" + path.name] = CICODataset(
+            datasets["extra_" + path.name] = CICODataset(
                 images=get_data(path),
                 label_ids=label_ids,
                 transforms=transforms["infer"],

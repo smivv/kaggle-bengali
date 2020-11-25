@@ -517,6 +517,7 @@ class ProjectorCallback(VisualizationCallback):
             image_key: str,
             labels_key: str,
             embeddings_key: str,
+            tag: str,
             *args,
             **kwargs,
     ):
@@ -532,6 +533,8 @@ class ProjectorCallback(VisualizationCallback):
             *args,
             **kwargs
         )
+
+        self.tag = tag
 
         self.image_key = image_key
         self.labels_key = labels_key
@@ -557,10 +560,11 @@ class ProjectorCallback(VisualizationCallback):
         embeddings = data[self.embeddings_key]
 
         tb_logger.add_embedding(
+            tag=self.tag,
             mat=embeddings,
             metadata=labels,
             label_img=images,
-            global_step=runner.global_sample_step
+            global_step=runner.global_sample_step,
         )
 
     def run(self, runner: Runner):

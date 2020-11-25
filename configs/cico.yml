@@ -182,9 +182,7 @@ stages:
     dataset_path: "/workspace/Datasets/CICO1.5/benchmarking_plan/v3"
     additional_paths: [
       "/workspace/Datasets/CICO1.5/benchmarking_plan/DoEv1_norm",
-      "/workspace/Datasets/CICO1.5/benchmarking_plan/DoEv1_rotated",
       "/workspace/Datasets/CICO1.5/benchmarking_plan/DoEv2_norm",
-      "/workspace/Datasets/CICO1.5/benchmarking_plan/DoEv2_rotated",
     ]
 #    use_one_hot: True
     image_size: *image_size
@@ -250,13 +248,6 @@ stages:
         concat_images: True
         denorm_fn: "imagenet"
 
-#      projector_callback:
-#        callback: ProjectorCallback
-#        image_key: *input_image_key
-#        labels_key: *input_label_key
-#        embeddings_key: *output_embedding_key
-#        denorm_fn: "imagenet"
-
       doe_callback:
         callback: DoECallback
         target_key: *input_target_key
@@ -265,10 +256,8 @@ stages:
         class_names: *class_names2
         train_loaders: ["train", "valid"]
         test_loaders: [
-            "infer_DoEv1_norm",
-            "infer_DoEv1_rotated",
-            "infer_DoEv2_norm",
-            "infer_DoEv2_rotated"
+            "extra_DoEv1_norm",
+            "extra_DoEv2_norm",
         ]
         doe_path: "/workspace/Datasets/CICO1.5/benchmarking_plan/DoEv2_norm/DoE.xlsx"
 
@@ -294,6 +283,14 @@ stages:
         save_dir: "cico10"
         activation: "Softmax"
 
+      projector_callback:
+        callback: ProjectorCallback
+        image_key: *input_image_key
+        labels_key: *input_label_key
+        embeddings_key: *output_embedding_key
+        denorm_fn: "imagenet"
+        tag: "cico1.0"
+
   infer_cico15:
     data_params:
       dataset_path: "/workspace/Datasets/CICO1.5/benchmarking_plan/v3"
@@ -317,52 +314,10 @@ stages:
         save_dir: "cico15"
         activation: "Softmax"
 
-  infer_doe_norm:
-    data_params:
-      dataset_path: "/workspace/Datasets/CICO1.5/benchmarking_plan/DoE_norm"
-
-    state_params:
-      num_epochs: 1
-
-    callbacks_params:
-      saver:
-        callback: CheckpointCallback
-        resume_dir: *logdir
-        resume: "checkpoints/best_full.pth"
-
-      embeddings_logger_callback:
-        callback: EmbeddingsLoggerCallback
-        filenames_key: *input_filename_key
+      projector_callback:
+        callback: ProjectorCallback
+        image_key: *input_image_key
+        labels_key: *input_label_key
         embeddings_key: *output_embedding_key
-        input_key: *input_target_key
-        label_key: *input_label_key
-        output_key: *output_target_key
-        class_names: *class_names
-        database_path: &database_path "/home/smirnvla/PycharmProjects/catalyst-classification/logs/cico15_256_arcface_64_5e-1_radam_plateu_1e-0_l2neck_stratified/embeddings/cico15"
-        save_dir: "DoE_norm"
-        activation: "Softmax"
-
-  infer_doe_rotated:
-    data_params:
-      dataset_path: "/workspace/Datasets/CICO1.5/benchmarking_plan/DoE_rotated"
-
-    state_params:
-      num_epochs: 1
-
-    callbacks_params:
-      saver:
-        callback: CheckpointCallback
-        resume_dir: *logdir
-        resume: "checkpoints/best_full.pth"
-
-      embeddings_logger_callback:
-        callback: EmbeddingsLoggerCallback
-        filenames_key: *input_filename_key
-        embeddings_key: *output_embedding_key
-        input_key: *input_target_key
-        label_key: *input_label_key
-        output_key: *output_target_key
-        class_names: *class_names
-        database_path: *database_path
-        save_dir: "DoE_rotated"
-        activation: "Softmax"
+        denorm_fn: "imagenet"
+        tag: "cico1.5"
