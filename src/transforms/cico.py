@@ -140,7 +140,8 @@ def get_transforms(image_size=224):
         "train": Compose(
             resize_transforms(image_size) +
             hard_transforms(image_size) +
-            post_transforms())
+            post_transforms()
+        )
         ,
         "valid": Compose(
             pre_transforms(image_size) +

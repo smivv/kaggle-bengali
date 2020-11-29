@@ -242,11 +242,11 @@ stages:
 #        class_names: *class_names
 #        prefix: &cm_prefix "cm"
 
-      visualization_callback:
-        callback: VisualizationCallback
-        input_keys: *input_image_key
-        concat_images: True
-        denorm_fn: "imagenet"
+#      visualization_callback:
+#        callback: VisualizationCallback
+#        input_keys: *input_image_key
+#        concat_images: True
+#        denorm_fn: "imagenet"
 
       doe_callback:
         callback: DoECallback
