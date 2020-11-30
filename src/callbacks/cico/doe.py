@@ -13,6 +13,7 @@ from pathlib import Path
 
 from catalyst.dl import IRunner, CallbackOrder, Callback
 
+from src.utils.knn import build_index, knn
 from src.datasets.cico import INPUT_FILENAME_KEY, INPUT_TARGET_KEY,  \
     OUTPUT_EMBEDDINGS_KEY
 
@@ -61,79 +62,6 @@ class DoECallback(Callback):
     def _detach(self, t: torch.Tensor) -> np.ndarray:
         return t.detach().cpu().numpy()
 
-    def _knn(
-            self,
-            all_embeddings: np.ndarray,
-            all_targets: np.ndarray,
-            embedding: np.ndarray,
-            index: faiss.Index = None,
-            top_k: int = 3,
-            k: int = 5,
-    ) -> List[Dict[str, Any]]:
-        """
-
-        Args:
-            embedding (np.ndarray): Embeddings to look kNN for
-            top_k (int): Top K results to return
-            k (int): Number of closest neighbors (k > 0)
-            index (bool): Whether to use index or not
-
-        Returns (Dict[str, Any]): Results
-
-        """
-        assert 0 < k < len(self.class_names), \
-            "`k` should be positive number"
-
-        if index is not None:
-            # Search for closest embeddings in terms of inner product distance
-            dists, nn_indcs = index.search(
-                embedding[np.newaxis, ...], k=len(all_embeddings))
-            dists = np.arccos(dists)
-
-            dists = np.squeeze(dists)
-            nn_indcs = np.squeeze(nn_indcs)
-        else:
-            # Search for closest embeddings in terms of inner product distance
-            dists = np.dot(all_embeddings, embedding.T)
-            dists = np.arccos(dists)
-
-            # Sort resulting distances
-            nn_indcs = dists.argsort(axis=0)
-            dists = dists[nn_indcs]
-
-        embeddings = all_embeddings[nn_indcs]
-        nn_targets = all_targets[nn_indcs]
-
-        results = []
-        true_target = None
-        for _ in range(top_k):
-
-            if true_target is not None:
-                not_equal_indcs = np.where(nn_targets != true_target)[0]
-                nn_targets = nn_targets[not_equal_indcs]
-                dists = dists[not_equal_indcs]
-                embeddings = embeddings[not_equal_indcs]
-
-            # Tale first k neighbor classes
-            k_nn_targets = nn_targets[:k]
-
-            # Find most frequent from them
-            true_target = mode(k_nn_targets, axis=0)[0][0]
-
-            closest_index = nn_targets.tolist().index(true_target)
-            closest_distance = dists[closest_index]
-
-            result = {
-                "target": true_target,
-                "caption": self.class_names[true_target],
-                "distance": closest_distance,
-                # "embeddings": embeddings[closest_index],
-            }
-
-            results.append(result)
-
-        return results
-
     def on_epoch_start(self, runner: "IRunner"):
         self._init()
 
@@ -180,8 +108,10 @@ class DoECallback(Callback):
             self.train_targets = np.array(self.train_targets)
             self.test_targets = np.array(self.test_targets)
 
-            index = faiss.IndexFlatIP(self.train_embeddings.shape[1])
-            index.add(self.train_embeddings)
+            index = build_index(
+                embeddings=self.test_embeddings,
+                labels=self.train_targets,
+            )
 
             length = len(self.test_embeddings)
 
@@ -190,13 +120,12 @@ class DoECallback(Callback):
 
                 start = time()
 
-                results: List[Dict] = self._knn(
-                    all_embeddings=self.train_embeddings,
-                    all_targets=self.train_targets,
+                results: List[Dict] = knn(
                     embedding=embedding,
                     index=index,
                     top_k=3,
-                    k=1
+                    k=1,
+                    labels2captions=self.class_names
                 )
 
                 targets = [r["target"] for r in results]
@@ -224,8 +153,10 @@ class DoECallback(Callback):
             self.test_embeddings = np.array(self.test_embeddings)
             self.train_targets = np.array(self.train_targets)
 
-            index1 = faiss.IndexFlatIP(self.train_embeddings.shape[1])
-            index1.add(self.train_embeddings)
+            index1 = build_index(
+                embeddings=self.train_embeddings,
+                labels=self.train_targets,
+            )
 
             length = len(self.dfs)
 
@@ -251,19 +182,23 @@ class DoECallback(Callback):
                     ])
                     test_idx = self.test_filenames[iname(row["Test Images"])]
 
-                    results: List[Dict] = sorted(self._knn(
+                    index2 = build_index(
+                        embeddings=self.test_embeddings[train_indcs],
+                        labels=np.array([target] * len(train_indcs)),
+                    )
+
+                    results: List[Dict] = sorted(knn(
                         index=index1,
-                        all_embeddings=self.train_embeddings,
-                        all_targets=self.train_targets,
                         embedding=self.test_embeddings[test_idx],
                         top_k=3,
-                        k=1
-                    ) + self._knn(
-                        all_embeddings=self.test_embeddings[train_indcs],
-                        all_targets=np.array([target] * len(train_indcs)),
+                        k=1,
+                        labels2captions=self.class_names
+                    ) + knn(
+                        index=index2,
                         embedding=self.test_embeddings[test_idx],
                         top_k=1,
-                        k=1
+                        k=1,
+                        labels2captions=self.class_names
                     ), key=lambda x: x["distance"])[:3]
 
                     targets = [r["target"] for r in results]

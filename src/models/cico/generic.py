@@ -52,7 +52,7 @@ class GenericModel(nn.Module):
         for key, head in self.heads.items():
             result[key] = head(embeddings)
 
-        return result["embeddings"], result["logits"]
+        return result["embeddings"]#, result["logits"]
 
     @classmethod
     def get_from_params(
@@ -142,5 +142,6 @@ class GenericModel(nn.Module):
 
         utils.set_requires_grad(model, requires_grad)
 
-        # print(model)
+        print(model)
+
         return model

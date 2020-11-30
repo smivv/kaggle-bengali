@@ -1,145 +1,119 @@
-import math
+from typing import List, Dict, Any, Union, Optional
+
+import faiss
+
 import numpy as np
+import pandas as pd
 
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-
-from .saving import read_pickle
-
-from scipy import stats
-
-from sklearn.neighbors import NearestNeighbors
+from pathlib import Path
+from ast import literal_eval
+from scipy.stats import mode
 
 
-def eval_metrics(y_true, y_pred):
-    return {'accuracy': accuracy_score(y_true, y_pred),
-            'precision': precision_score(y_true, y_pred, average='weighted'),
-            'recall': recall_score(y_true, y_pred, average='weighted'),
-            'f1-score': f1_score(y_true, y_pred, average='weighted')}
+def build_benchmark_index(path: Union[str, Path]):
+    df = pd.read_excel(str(path), sheet_name='Benchmarking')
+
+    df = df[df['Utilized'] == 1]
+    df = df.loc[df['Test case'].notnull()]
+    df['Test Set'] = df['Test Set'].apply(lambda x: literal_eval(x))
+
+    index = {}
+    for i, row in df.iterrows():
+        cat, subcat, var = row['Category'], row['Subcategory'], row['Variant']
+        for cam in row['Test Set']:
+            index[f"{cat}_{subcat}_{var}_{cam}"] = row['Test case']
+
+    return index
 
 
-def print_metrics(metrics):
-    print(f"--------------------------------------------------------------------------------------------------")
-    print(f"--------------------- K Nearest Neighbors accuracy metrics ----------------------------")
-    print(f"Accuracy: {metrics['accuracy']}, Precision: {metrics['precision']}, "
-          f"Recall: {metrics['recall']}, F1-score: {metrics['f1-score']}")
-    print(f"--------------------------------------------------------------------------------------------------")
-    print(f"--------------------------------------------------------------------------------------------------")
+def build_index(
+        embeddings: np.ndarray = None,
+        labels: np.ndarray = None,
+) -> faiss.Index:
+    """
+    Loads database from pickle.
+
+    Args:
+        embeddings (Optional[np.ndarray]): Embeddings.
+        labels (Optional[np.ndarray]): Labels.
+
+    Returns (faiss.Index): Index.
+
+    """
+    index = faiss.index_factory(
+        embeddings.shape[1],
+        "IDMap,Flat",
+        faiss.METRIC_INNER_PRODUCT
+    )
+
+    index.add_with_ids(embeddings, labels)
+
+    return index
 
 
-def nearest_neighbors_numpy(train_emb, test_emb=None, n_folds=1, metric='angular', method='most frequent', k=5):
-    leave_one_out = test_emb is None
+def knn(
+        index: faiss.Index,
+        embedding: np.ndarray,
+        labels2captions: Union[np.ndarray, Dict],
+        top_k: int = 3,
+        k: int = 1,
+):
+    """
+        Performs kNN on factory index + index with `name`.
 
-    if leave_one_out:
-        test_emb = train_emb
+        Args:
+            index (faiss.Index): Index object
+            embedding (np.ndarray): Embeddings query.
+            top_k (int): Top K results to return.
+            k (int): K parameter in kNN.
+            labels2captions (Dict[int, str]):
 
-    test_length = len(test_emb['targets'])
-    x_train, y_train = np.asarray(train_emb['embeddings']), np.asarray(train_emb['targets'])
-    x_test, y_test = np.asarray(test_emb['embeddings']), test_emb['targets']
+        Returns List[Dict]: Closest neighbors.
 
-    y_pred = None
-    metrics = None
-    while metrics is None:
-        try:
-            y_pred = []
-            end_idx, batch_size = 0, math.ceil(test_length / n_folds)
-            for s, start_idx in enumerate(range(0, test_length, batch_size)):
+        """
 
-                print(f"Nearest Neighbors evaluation for {s + 1}th of {n_folds} folds started..")
+    results = []
 
-                end_idx = min(start_idx + batch_size, test_length)
+    # Search for closest embeddings in terms of inner product distance
+    nn_distances, nn_labels = index.search(
+        embedding[np.newaxis, ...], k=index.ntotal)
+    nn_distances = np.clip(nn_distances, 0.0, 1.0)
+    nn_distances = np.arccos(nn_distances)
 
-                x = x_test[start_idx: end_idx]
+    nn_distances = np.squeeze(nn_distances)
+    nn_labels = np.squeeze(nn_labels)
 
-                if metric.startswith('angular'):
-                    dot = np.dot(x, x_train.T)
-                    if metric.endswith('norm'):
-                        n1 = np.linalg.norm(x, axis=1)[:, np.newaxis]
-                        n2 = np.linalg.norm(x_train.T, axis=0)[np.newaxis, :]
-                        product = np.arccos(dot / n1 / n2)
-                    else:
-                        product = np.arccos(dot)
-                elif metric == 'euclidean':
-                    product = np.linalg.norm(x[:, np.newaxis] - x_train, axis=2)
-                else:
-                    raise Exception("Unknown metric")
+    true_label = None
 
-                knn_indcs = product.argsort(axis=1)
-                # knn_vals = np.take_along_axis(product, knn_indcs, axis=1)
-                # knn_classes = np.take_along_axis(np.tile(y_train, (knn_indcs.shape[0], 1)), knn_indcs, axis=1)
-                knn_classes = y_train[knn_indcs]
+    top_k = min(top_k, len(np.unique(nn_labels)))
+    for _ in range(top_k):
 
-                if leave_one_out:
-                    # first elements are always the same
-                    # knn_indcs = knn_indcs[:, 1:]
-                    # knn_vals = knn_vals[:, 1:]
-                    knn_classes = knn_classes[:, 1:]
+        if true_label is not None:
+            not_equal_indcs = np.where(nn_labels != true_label)[0]
+            nn_labels = nn_labels[not_equal_indcs]
+            nn_distances = nn_distances[not_equal_indcs]
 
-                if method == 'first':
-                    y_pred.extend(knn_classes[:, 0].tolist())
-                elif method == 'most frequent':
-                    # knn_indcs = knn_indcs[:, 0:k]
-                    # knn_vals = knn_vals[:, 0:k]
-                    knn_classes = knn_classes[:, 0:k]
+        # Tale first k neighbor classes
+        if nn_labels.ndim == 0:
+            true_label = int(nn_labels)
+            true_caption = labels2captions[true_label]
+            closest_distance = float(nn_distances)
+        else:
+            knn_labels = nn_labels[:k]
 
-                    knn_classes, _ = stats.mode(knn_classes, axis=1)
+            # Find most frequent from them
+            true_label = mode(knn_labels, axis=0)[0][0]
+            true_caption = labels2captions[true_label]
 
-                    y_pred.extend(knn_classes[:, 0].tolist())
-                else:
-                    raise Exception("Unknown metric")
+            closest_index = nn_labels.tolist().index(true_label)
+            closest_distance = nn_distances[closest_index]
 
-            # y_pred = np.asarray(y_pred)
-            # metrics = eval_metrics(y_test, y_pred)
-            metrics = 1
-        except MemoryError:
-            metrics = None
-            n_folds *= 2
-            print(f"Memory error with {int(n_folds / 2)} fold, will try with {n_folds}..")
+        result = {
+            "label": true_label,
+            "caption": true_caption,
+            "distance": closest_distance,
+        }
 
-    return metrics, y_test, y_pred, n_folds
+        results.append(result)
 
-
-def nearest_neighbors_numpy2(train_emb, test_emb=None, n_folds=1, metric='euclidean', k=5):
-    leave_one_out = test_emb is None
-
-    if leave_one_out:
-        test_emb = train_emb
-
-    test_length = len(test_emb['captions'])
-    x_train, y_train = train_emb['values'], train_emb['captions']
-    x_test, y_test = test_emb['values'], test_emb['captions']
-
-    metrics = None
-    while metrics is None:
-        try:
-            y_pred = []
-
-            classifier = NearestNeighbors(n_neighbors=k, metric=metric, algorithm='brute')
-            classifier.fit(x_train, y_train)
-
-            end_idx, batch_size = 0, math.ceil(test_length / n_folds)
-            for s, start_idx in enumerate(range(0, test_length, batch_size)):
-
-                print(f"Nearest Neighbors evaluation for {s + 1}th of {n_folds} folds started..")
-
-                end_idx = min(start_idx + batch_size, test_length)
-
-                x = x_test[start_idx: end_idx]
-
-                knn_ids = classifier.kneighbors(x, return_distance=False)
-
-                if leave_one_out:
-                    knn_ids = knn_ids[:, 1:]
-                knn_ids = knn_ids[:, 0:k]
-
-                knn_classes = y_train[knn_ids]
-                knn_classes, _ = stats.mode(knn_classes, axis=1)
-
-                y_pred.extend(knn_classes[:, 0].tolist())
-
-            metrics = eval_metrics(y_test, y_pred)
-        except MemoryError:
-            metrics = None
-            n_folds *= 2
-            print(f"Memory error with {int(n_folds / 2)} fold, will try with {n_folds}..")
-
-    return metrics, y_test, y_pred, n_folds
+    return results

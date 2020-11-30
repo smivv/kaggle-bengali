@@ -1,56 +1,37 @@
-from typing import Optional, List, Dict, Union
+from typing import Union, Optional, List, Dict
 
-import math
+import faiss
 import pickle
 import torch.distributed  # noqa: WPS301
 
 import numpy as np
 import pandas as pd
 
-from sklearn.metrics import accuracy_score
-from scipy.stats import mode
+from time import time
 from pathlib import Path
 
-from catalyst.dl import IRunner, State, CallbackOrder, Callback
+from catalyst.dl import IRunner, CallbackOrder, Callback
 from catalyst.utils.torch import get_activation_fn
 
-from src.utils.plots import plot_confusion_matrix
-from src.utils.utils import build_index
+from sklearn.metrics import accuracy_score
 
-FILENAMES_KEY = "filenames"
-EMBEDDINGS_KEY = "embeddings"
-PREDICTS_KEY = "predicts"
-TARGETS_KEY = "targets"
-LABELS_KEY = "labels"
+from src.utils.knn import build_benchmark_index, build_index, knn
+from src.datasets.cico import \
+    INPUT_FILENAME_KEY, INPUT_TARGET_KEY, INPUT_LABEL_KEY, \
+    OUTPUT_TARGET_KEY, OUTPUT_EMBEDDINGS_KEY
 
-TOP1_KEY = "top1"
-TOP3_KEY = "top3"
-
-TOP1_EQ_KEY = "top1_eq"
-TOP3_EQ_KEY = "top3_eq"
-
-TOP1_KNN_KEY = "top1_knn"
-TOP3_KNN_KEY = "top3_knn"
-
-TOP1_KNN_EQ_KEY = "top1_knn_eq"
-TOP3_KNN_EQ_KEY = "top3_knn_eq"
-
-KEYS = [FILENAMES_KEY, EMBEDDINGS_KEY, PREDICTS_KEY, TARGETS_KEY, LABELS_KEY]
-
-PICKLE_KEYS = [
-    FILENAMES_KEY, EMBEDDINGS_KEY, TARGETS_KEY, LABELS_KEY
+ALL_KEYS = [
+    INPUT_FILENAME_KEY, INPUT_TARGET_KEY, INPUT_LABEL_KEY,
+    OUTPUT_TARGET_KEY, OUTPUT_EMBEDDINGS_KEY,
 ]
 
 XLS_KEYS = [
-    FILENAMES_KEY, LABELS_KEY,
-    TOP1_KEY, TOP1_EQ_KEY, TOP3_KEY, TOP3_EQ_KEY,
-    TOP1_KNN_KEY, TOP1_KNN_EQ_KEY, TOP3_KNN_KEY, TOP3_KNN_EQ_KEY
+    INPUT_FILENAME_KEY, INPUT_TARGET_KEY, INPUT_LABEL_KEY,
 ]
 
-ALL_KEYS = [
-    FILENAMES_KEY, EMBEDDINGS_KEY, PREDICTS_KEY, TARGETS_KEY, LABELS_KEY,
-    TOP1_KEY, TOP1_EQ_KEY, TOP3_KEY, TOP3_EQ_KEY,
-    TOP1_KNN_KEY, TOP1_KNN_EQ_KEY, TOP3_KNN_KEY, TOP3_KNN_EQ_KEY
+PKL_KEYS = [
+    INPUT_FILENAME_KEY, INPUT_TARGET_KEY, INPUT_LABEL_KEY,
+    OUTPUT_EMBEDDINGS_KEY
 ]
 
 
@@ -58,50 +39,64 @@ class BenchmarkingCallback(Callback):
 
     def __init__(
             self,
-            input_key: str = "target",
-            output_key: str = "logits",
-            label_key: str = "label",
-            filenames_key: str = "filename",
-            embeddings_key: str = "embeddings",
-            test_cases: Dict[str, Union[str, List[str]]] = None,
+            target_key: str,
+            label_key: str,
+            filename_key: str,
+            embedding_key: str,
+            logit_key: str = None,
+
             class_names: List[str] = None,
-            save_dir: str = None,
             activation: Optional[str] = None,
-            benchmarking_plan_path: str = None,
+            
+            enable_benchmark: bool = False,
+            benchmark_train_loader: str = None,
+            benchmark_test_loader: str = None,
+            benchmark_xlsx: Union[str, Path] = None,
+            
+            enable_doev1: bool = False,
+            doev1_train_loaders: Union[str, List[str]] = None,
+            doev1_test_loaders: Union[str, List[str]] = None,
+
+            enable_doev2: bool = False,
+            doev2_train_loaders: Union[str, List[str]] = None,
+            doev2_test_loaders: Union[str, List[str]] = None,
+            doev2_xlsx: str = None,
+
+            save_dir: str = None,
     ):
         super().__init__(CallbackOrder.Metric)
 
-        self.index = build_index(benchmarking_plan_path)
+        self.filename_key = filename_key
+        self.embedding_key = embedding_key
 
-        self.input_key = input_key
-        self.output_key = output_key
         self.labels_key = label_key
-        self.filenames_key = filenames_key
-        self.embeddings_key = embeddings_key
-
-        self.test_cases = test_cases
+        self.target_key = target_key
+        self.logit_key = logit_key
 
         self.save_dir = save_dir
 
-        self.class_names = np.asarray(class_names)
+        self.class_names = {i: name for i, name in enumerate(class_names)}
+        self.class_ids = {name: i for i, name in enumerate(class_names)}
 
         self.activation_fn = get_activation_fn(activation)
-
-        self.n_folds = 8
-
-        self.best_score = -1
         
-        self.torch_metrics = {
-            "angular": self._knn_angular_torch,
-            "angular_normed": self._knn_angular_normed_torch,
-            "euclidean": self._knn_euclidean_torch,
-        }
+        self.enable_benchmark = enable_benchmark
+        if enable_benchmark:
+            self.benchmark_train_loader = benchmark_train_loader
+            self.benchmark_test_loader = benchmark_test_loader
+            self.benchmark_index: Dict = build_benchmark_index(benchmark_xlsx)
         
-        self.numpy_metrics = {
-            "angular": self._knn_angular_numpy,
-            "angular_normed": self._knn_angular_normed_numpy,
-            "euclidean": self._knn_euclidean_numpy,
-        }
+        self.enable_doev1 = enable_doev1
+        if enable_doev1:
+            self.doev1_train_loaders = doev1_train_loaders
+            self.doev1_test_loaders = doev1_test_loaders
+
+        self.enable_doev2 = enable_doev2
+        if enable_doev2:
+            self.doev2_train_loaders = doev2_train_loaders
+            self.doev2_test_loaders = doev2_test_loaders
+            self.doev2_dfs: Dict[str, pd.DataFrame] = \
+                pd.read_excel(doev2_xlsx, sheet_name=None)
 
     def _init(self):
         self.data = {}
@@ -109,267 +104,227 @@ class BenchmarkingCallback(Callback):
     def _detach(self, t: torch.Tensor) -> np.ndarray:
         return t.detach().cpu().numpy()
 
-    def _read_pickle(self, pickle_dir: Path, name='all'):
-        pickle_path = pickle_dir / (name + '.pickle')
+    def _read_pickle(self, pickle_dir: Path, name="all"):
+        pickle_path = pickle_dir / (name + ".pickle")
         return pickle.loads(open(pickle_path, "rb").read())
 
-    def _save_pickle(self, data, pickle_dir: Path, name: str):
-        data_ = {}
-        for key in PICKLE_KEYS:
-            data_ = data[key]
+    def _save_pickle(self, embeddings, pickle_dir: Path, name: str):
         with open((pickle_dir / (name + ".pickle")).as_posix(), "wb") as file:
-            pickle.dump(obj=data_, file=file)
+            pickle.dump(obj=embeddings, file=file)
 
-    def _save_excel(self, data, csv_dir: Path, name: str):
-        data_ = {}
-        for key in XLS_KEYS:
-            data_ = data[key]
-        df = pd.DataFrame.from_dict(data_)
-        df.to_excel((csv_dir / (name + ".xlsx")).as_posix())
-
-    def _knn_angular_torch(self, x, y):
-        dot = torch.mm(x, y.transpose(0, 1))
-        return self._detach((-dot).argsort(dim=1))
-
-    def _knn_angular_normed_torch(self, x, y):
-        dot = torch.mm(x, y.transpose(0, 1))
-        n1 = torch.unsqueeze(torch.norm(x, dim=1), dim=1)
-        n2 = torch.unsqueeze(torch.norm(torch.transpose(y, 0, 1), dim=0), dim=0)
-        product = torch.acos(dot / n1 / n2)
-        return self._detach(product.argsort(dim=1))
-
-    def _knn_euclidean_torch(self, x, y):
-        product = torch.norm(torch.unsqueeze(x, dim=1) - y, dim=2)
-        return self._detach(product.argsort(dim=1))
-
-    def _knn_angular_numpy(self, x, y):
-        return (-np.dot(x, y.T)).argsort(axis=1)
-
-    def _knn_angular_normed_numpy(self, x, y):
-        dot = np.dot(x, y.T)
-        n1 = np.linalg.norm(x, axis=1)[:, np.newaxis]
-        n2 = np.linalg.norm(y.T, axis=0)[np.newaxis, :]
-        product = np.arccos(dot / n1 / n2)
-        return product.argsort(dim=1)
-
-    def _knn_euclidean_numpy(self, x, y):
-        product = np.linalg.norm(x[:, np.newaxis] - y, axis=2)
-        return product.argsort(axis=1)
+    def _save_excel(self, embeddings, csv_dir: Path, name: str):
+        df = pd.DataFrame.from_dict(embeddings)
+        df.to_excel(str(csv_dir / (name + ".xlsx")))
     
-    def _knn(self, train_emb, test_emb=None, k=5, topk=3,
-             metric="angular", method="most frequent", use_torch=False):
-
-        leave_one_out = test_emb is None
-
-        if leave_one_out:
-            test_emb = train_emb
-
-        test_length = len(test_emb[TARGETS_KEY])
-        x_train, y_train = np.asarray(train_emb[EMBEDDINGS_KEY]), np.asarray(
-            train_emb[TARGETS_KEY])
-        x_test, y_test = np.asarray(test_emb[EMBEDDINGS_KEY]), np.asarray(
-            test_emb[TARGETS_KEY])
-
-        if use_torch:
-            x_train = torch.FloatTensor(x_train)
-            y_train = torch.FloatTensor(y_train)
-            x_test = torch.FloatTensor(x_test)
-            y_test = torch.FloatTensor(y_test)
-
-            metric_fn = self.torch_metrics[metric]
+    def _gather_data(self, loaders: Union[str, List[str]]):
+        if isinstance(loaders, str):
+            return {k: np.array(v) for k, v in self.data[loaders].items()}
         else:
-            metric_fn = self.numpy_metrics[metric]
+            data = {k: [] for k in ALL_KEYS}
+            for k in ALL_KEYS:
+                for loader in loaders:
+                    data[k] += self.data[loader][k]
+                data[k] = np.array(data[k])
+            return data
 
-        y_pred = None
-        result = False
-        while not result:
-            try:
-                y_pred = []
-                end_idx, batch_size = 0, math.ceil(test_length / self.n_folds)
-                for s, start_idx in enumerate(
-                        range(0, test_length, batch_size)):
+    def doev1(self, runner: "IRunner"):
 
-                    print(f"Nearest Neighbors evaluation for {s + 1}th of "
-                          f"{self.n_folds} folds started..")
-
-                    end_idx = min(start_idx + batch_size, test_length)
-
-                    x = x_test[start_idx: end_idx]
-
-                    knn_indcs = metric_fn(x, x_train)
-                    knn_classes = y_train[knn_indcs]
-
-                    if leave_one_out:
-                        # first elements are always the same
-                        knn_classes = knn_classes[:, 1:]
-
-                    # reduce size of array to speed up process
-                    knn_classes = knn_classes[:, :1000]
-
-                    uniques, indices = \
-                        np.unique(knn_classes, return_index=True, axis=1)
-
-                    indices = np.argsort(indices, axis=1)
-                    uniques = uniques[indices]
-
-                    if method == "first":
-                        results = uniques[:, topk].tolist()
-                    elif method == "most frequent":
-                        results = []
-                        rm_class = None
-                        for j in range(topk):
-                            if rm_class is not None:
-                                uniques = uniques[uniques != rm_class]
-                            k_uniques = uniques[:, :k]
-                            result, _ = mode(k_uniques, axis=1)
-                            rm_class = result[:, 0]
-                            results.append(rm_class)
-                        results = np.hstack(results)
-                    else:
-                        raise Exception("Unknown metric")
-
-                    y_pred.extend(results)
-
-                result = True
-            except MemoryError:
-                result = False
-                self.n_folds *= 2
-                print(f"Memory error with {int(self.n_folds / 2)} fold, "
-                      f"will try with {self.n_folds}..")
-
-        return np.asarray(y_pred), y_test
-
-    def _knn_torch(self, train_emb, test_emb=None, k=5, topk=3,
-                   metric="angular", method="most frequent"):
-
-        leave_one_out = test_emb is None
-
-        if leave_one_out:
-            test_emb = train_emb
-
-        test_length = len(test_emb[TARGETS_KEY])
-        x_train, y_train = np.asarray(train_emb[EMBEDDINGS_KEY]), np.asarray(
-            train_emb[TARGETS_KEY])
-        x_test, y_test = np.asarray(test_emb[EMBEDDINGS_KEY]), np.asarray(
-            test_emb[TARGETS_KEY])
-
-        y_pred = None
-        result = False
-        while not result:
-            try:
-                y_pred = []
-                end_idx, batch_size = 0, math.ceil(test_length / self.n_folds)
-                for s, start_idx in enumerate(
-                        range(0, test_length, batch_size)):
-
-                    print(f"Nearest Neighbors evaluation for {s + 1}th of "
-                          f"{self.n_folds} folds started..")
-
-                    end_idx = min(start_idx + batch_size, test_length)
-
-                    x = x_test[start_idx: end_idx]
-
-                    if metric.startswith("angular"):
-                        # dot = np.dot(x, x_train.T)
-                        dot = torch.mm(x, x_train.transpose(0, 1))
-                        if metric.endswith("norm"):
-                            raise NotImplemented("")
-                            # n1 = np.linalg.norm(x, axis=1)[:, np.newaxis]
-                            # n2 = np.linalg.norm(x_train.T, axis=0)[np.newaxis, :]
-                            # product = np.arccos(dot / n1 / n2)
-                        else:
-                            # product = np.arccos(dot)
-                            product = torch.acos(dot)
-                    elif metric == "euclidean":
-                        product = np.linalg.norm(x[:, np.newaxis] - x_train,
-                                                 axis=2)
-                    else:
-                        raise Exception("Unknown metric")
-
-                    # knn_indcs = product.argsort(axis=1)
-                    knn_indcs = self._detach(product.argsort(dim=1))
-                    knn_classes = y_train[knn_indcs]
-
-                    if leave_one_out:
-                        # first elements are always the same
-                        knn_classes = knn_classes[:, 1:]
-
-                    length = len(knn_classes)
-                    results = [[] for _ in range(length)]
-
-                    if method == "first":
-                        for i in range(length):
-                            for class_ in knn_classes[i]:
-                                if class_ not in results[i]:
-                                    results[i].append(class_)
-                                if len(results[i]) == topk:
-                                    break
-                    elif method == "most frequent":
-                        for i in range(length):
-                            rm_class = None
-                            classes = knn_classes[i].copy()
-                            for j in range(topk):
-                                if rm_class is not None:
-                                    classes = classes[classes != rm_class]
-                                k_classes = classes[:k]
-                                result, _ = mode(k_classes, axis=0)
-                                rm_class = result[0]
-                                results[i].append(rm_class)
-                    else:
-                        raise Exception("Unknown metric")
-
-                    y_pred.extend(results)
-
-                result = True
-            except MemoryError:
-                result = False
-                self.n_folds *= 2
-                print(f"Memory error with {int(self.n_folds / 2)} fold, "
-                      f"will try with {self.n_folds}..")
-
-        return np.asarray(y_pred), y_test
-
-    def _benchmark(self, filenames, true, predicted):
-        result = {
-            k: {'true': [], 'pred': []}
-            for k in ['size', 'dishware', 'trial', 'scale', 'recipe kind']
+        metrics = {
+            "All": 0,
+            "Recognized": 0,
+            "NotRecognized": 0,
+            "Top1": 0,
+            "Top2": 0,
+            "Top3": 0,
         }
 
-        for filename, true, pred in zip(filenames, true, predicted):
+        train_data = self._gather_data(self.doev1_train_loaders)
+        test_data = self._gather_data(self.doev1_test_loaders)
 
-            # filename = Path(filename).name
+        index = build_index(
+            embeddings=train_data[OUTPUT_EMBEDDINGS_KEY],
+            labels=train_data[INPUT_TARGET_KEY],
+        )
+
+        for i, (embedding, target) in enumerate(zip(
+                test_data[OUTPUT_EMBEDDINGS_KEY],
+                test_data[INPUT_TARGET_KEY])):
+
+            results: List[Dict] = knn(
+                embedding=embedding,
+                index=index,
+                top_k=3,
+                k=1,
+                labels2captions=self.class_names
+            )
+
+            targets = [r["label"] for r in results]
+
+            try:
+                position = targets.index(target) + 1
+
+                metrics["Recognized"] += 1
+                metrics[f"Top{position}"] += 1
+            except ValueError:
+                metrics["NotRecognized"] += 1
+
+            metrics["All"] += 1
+
+        runner.epoch_metrics.update(**{
+            "doev1_top1_acc": metrics["Top1"] / metrics["All"],
+            "doev1_top3_acc": metrics["Top3"] / metrics["All"],
+        })
+
+    def doev2(self, runner: "IRunner"):
+
+        metrics = {
+            "All": 0,
+            "Recognized": 0,
+            "NotRecognized": 0,
+            "Top1": 0,
+            "Top2": 0,
+            "Top3": 0,
+        }
+
+        train_data = self._gather_data(self.doev2_train_loaders)
+        test_data = self._gather_data(self.doev2_test_loaders)
+
+        test_filenames = \
+            {f: i for i, f in enumerate(test_data[INPUT_FILENAME_KEY])}
+        test_embeddings = test_data[OUTPUT_EMBEDDINGS_KEY]
+
+        index1 = build_index(
+            embeddings=train_data[OUTPUT_EMBEDDINGS_KEY],
+            labels=train_data[INPUT_TARGET_KEY],
+        )
+
+        for i, (caption, df) in enumerate(self.doev2_dfs.items()):
+
+            if caption not in self.class_ids:
+                t = len(self.class_names)
+                print(f"Add Classname {t}:{caption}")
+                self.class_names[t] = caption
+                self.class_ids[caption] = t
+
+            target = self.class_ids[caption]
+
+            def iname(index):
+                return f"{caption}({index})"
+
+            for _, row in df.iterrows():
+                train_indcs = np.array([
+                    test_filenames[iname(s)]
+                    for s in str(row["Train Images"]).split(",")
+                ])
+                test_idx = test_filenames[iname(row["Test Images"])]
+
+                index2 = build_index(
+                    embeddings=test_embeddings[train_indcs],
+                    labels=np.array([target] * len(train_indcs)),
+                )
+
+                results: List[Dict] = sorted(knn(
+                    index=index1,
+                    embedding=test_embeddings[test_idx],
+                    top_k=3,
+                    k=1,
+                    labels2captions=self.class_names
+                ) + knn(
+                    index=index2,
+                    embedding=test_embeddings[test_idx],
+                    top_k=1,
+                    k=1,
+                    labels2captions=self.class_names
+                ), key=lambda x: x["distance"])[:3]
+
+                targets = [r["label"] for r in results]
+
+                try:
+                    position = targets.index(target) + 1
+
+                    metrics["Recognized"] += 1
+                    metrics[f"Top{position}"] += 1
+                except ValueError:
+                    metrics["NotRecognized"] += 1
+
+                metrics["All"] += 1
+
+            end = time()
+
+        runner.epoch_metrics.update(**{
+            "doev2_top1_acc": metrics["Top1"] / metrics["All"],
+            "doev2_top3_acc": metrics["Top3"] / metrics["All"],
+        })
+        
+    def benchmark(self, runner: "IRunner"):
+
+        metrics = {
+            k: {"target": [], "top1": [], "top3": []}
+            for k in ["size", "dishware", "trial", "scale", "recipekind"]
+        }
+
+        train_data = self._gather_data(self.benchmark_train_loader)
+        test_data = self._gather_data(self.benchmark_test_loader)
+
+        index = build_index(
+            embeddings=train_data[OUTPUT_EMBEDDINGS_KEY],
+            labels=train_data[INPUT_TARGET_KEY],
+        )
+
+        for i, (filename, embedding, target) in enumerate(zip(
+                test_data[INPUT_FILENAME_KEY],
+                test_data[OUTPUT_EMBEDDINGS_KEY],
+                test_data[INPUT_TARGET_KEY])):
 
             if "Camera" not in filename:
                 continue
 
-            if '5000k' in filename:
-                cat, subcat, var, _, _, camera, _ = filename.split('_')
+            if "5000k" in filename:
+                cat, subcat, var, _, _, camera, _ = filename.split("_")
             else:
-                cat, subcat, var, _, camera, _ = filename.split('_')
+                cat, subcat, var, _, camera, _ = filename.split("_")
 
-            test_case = self.index[f"{cat}_{subcat}_{var}_{camera}"]
+            test_case = self.benchmark_index[f"{cat}_{subcat}_{var}_{camera}"]
 
-            for k, v in result.items():
-                if k in test_case:
-                    result[k]['true'].append(true)
-                    result[k]['pred'].append(pred)
-        return result
-
-    def _save_benchmark(self, result, save_to: Path, prefix: str = "top1"):
-        out = {}
-        for k, v in result.items():
-            plot_confusion_matrix(
-                y_true=v['true'],
-                y_pred=v['pred'],
-                classes=self.class_names,
-                save_to=(save_to / f'_{prefix}_{k}_cm_norm.png').as_posix(),
-                normalize=True
+            results: List[Dict] = knn(
+                embedding=embedding,
+                index=index,
+                top_k=3,
+                k=1,
+                labels2captions=self.class_names
             )
 
-            out[k] = accuracy_score(v['true'], v['pred'])
+            targets = [r["label"] for r in results]
 
-            open((save_to / f"_{prefix}_{k}_{out[k]}").as_posix(), 'w').close()
-        return out
+            top1 = targets[0]
+            try:
+                top3 = targets[targets.index(target)]
+            except ValueError:
+                top3 = top1
+
+            for k, v in metrics.items():
+                if k in test_case:
+                    metrics[k]["target"].append(target)
+                    metrics[k]["top1"].append(top1)
+                    metrics[k]["top3"].append(top3)
+
+        all_top1, all_top3 = [], []
+        for k, v in metrics.items():
+            top1 = accuracy_score(metrics[k]["target"], metrics[k]["top1"])
+            top3 = accuracy_score(metrics[k]["target"], metrics[k]["top3"])
+
+            all_top1.append(top1)
+            all_top3.append(top3)
+
+            runner.epoch_metrics.update(**{
+                f"{k}_top1_acc": top1,
+                f"{k}_top3_acc": top3,
+            })
+
+        runner.epoch_metrics.update(**{
+            "valid__avg_top1_acc": sum(all_top1) / len(all_top1),
+            "valid__avg_top3_acc": sum(all_top3) / len(all_top3),
+        })
 
     def on_stage_start(self, runner: "IRunner"):
         self._init()
@@ -379,124 +334,52 @@ class BenchmarkingCallback(Callback):
 
     def on_batch_end(self, runner: "IRunner"):
 
-        filenames = runner.input[self.filenames_key]
+        embeddings = self._detach(runner.output[self.embedding_key])
+        filenames = runner.input[self.filename_key]
         labels = runner.input[self.labels_key]
-        embeddings = self._detach(runner.output[self.embeddings_key])
 
-        targets: np.ndarray = self._detach(runner.input[self.input_key])
-
-        predicts = self.activation_fn(runner.output[self.output_key])
-        predicts = self._detach(predicts)
-
-        assert not np.isnan(np.sum(targets)) and \
-               not np.isnan(np.sum(predicts))
-
-        indcs = np.argsort(-predicts, axis=1)
-
-        top1_indcs = indcs[:, 0]
-        top3_indcs = indcs[:, :3]
-
-        top1_labels = self.class_names[top1_indcs]
-        top3_labels = self.class_names[top3_indcs]
+        targets = self._detach(runner.input[self.target_key])
 
         data = self.data[runner.loader_name]
 
-        data[FILENAMES_KEY].extend(filenames)
-        data[EMBEDDINGS_KEY].extend(embeddings)
-        data[TARGETS_KEY].extend(targets)
-        data[LABELS_KEY].extend(labels)
+        data[INPUT_FILENAME_KEY].extend(filenames)
+        data[OUTPUT_EMBEDDINGS_KEY].extend(embeddings)
 
-        data[TOP1_KEY].extend(top1_labels)
-        data[TOP3_KEY].extend(top3_labels)
+        data[INPUT_TARGET_KEY].extend(targets)
+        data[INPUT_LABEL_KEY].extend(labels)
 
-        top1_eq = np.equal(top1_indcs, targets)
-        top3_eq = np.max(np.equal(top3_indcs, targets[..., np.newaxis]), axis=1)
+        if self.logit_key is not None:
+            predicts = self.activation_fn(runner.output[self.logit_key])
+            predicts = self._detach(predicts)
 
-        data[TOP1_EQ_KEY].extend(top1_eq)
-        data[TOP3_EQ_KEY].extend(top3_eq)
+            data[OUTPUT_TARGET_KEY].extend(predicts)
 
-    def on_epoch_end(self, runner: "IRunner"):
+    def on_epoch_end(self, runner: "IRunner") -> None:
+        if self.enable_doev1:
+            self.doev1(runner=runner)
+        if self.enable_doev2:
+            self.doev2(runner=runner)
+        if self.enable_benchmark:
+            self.benchmark(runner=runner)
 
-        save_to: Path = Path(runner.logdir)
-        save_to /= "benchmarking"
+    def on_stage_end(self, runner: "IRunner") -> None:
 
         if self.save_dir is not None:
-            save_to /= self.save_dir
+            save_to: Path = \
+                Path(runner.logdir) / "embeddings" / self.save_dir
 
-        save_to.mkdir(parents=True, exist_ok=True)
+            save_to.mkdir(parents=True, exist_ok=True)
 
-        is_better = False
-        for train_loader_name, test_loader_names in self.test_cases.items():
+            pkl_data = {k: [] for k in PKL_KEYS}
+            xls_data = {k: [] for k in XLS_KEYS}
+            for loader_name, loader_values in self.data.items():
+                self._save_pickle(loader_values, save_to, loader_name)
 
-            if isinstance(test_loader_names, str):
-                train_emb = self.data[test_loader_names]
-            else:
-                train_emb = {key: [] for key in KEYS}
-                for key in KEYS:
-                    for loader_name in test_loader_names:
-                        train_emb[key] = train_emb[key] + \
-                                         self.data[loader_name][key]
+                for key in XLS_KEYS:
+                    xls_data[key] += loader_values[key]
 
-            data = self.data[train_loader_name]
+                for key in PKL_KEYS:
+                    pkl_data[key] += loader_values[key]
 
-            top3_indcs, _ = self._knn(
-                train_emb=train_emb,
-                test_emb=data,
-                metric="angular",
-                method="most frequent",
-                topk=3,
-                k=5,
-            )
-            top1_indcs = top3_indcs[:, 0]
-
-            data[TOP1_KNN_KEY].extend(top1_indcs)
-            data[TOP3_KNN_KEY].extend(top3_indcs)
-
-            filenames = data[FILENAMES_KEY]
-            targets = data[TARGETS_KEY]
-
-            top1_eq = np.equal(top1_indcs, targets)
-            top3_eq = np.max(np.equal(top3_indcs, targets[..., np.newaxis]), axis=1)
-
-            data[TOP1_KNN_EQ_KEY].extend(top1_eq)
-            data[TOP3_KNN_EQ_KEY].extend(top3_eq)
-
-            if train_loader_name == "valid":
-                top3_indcs = np.where(top3_eq, np.array(targets), top3_indcs[:, 0])
-                top1_indcs, top3_indcs = top1_indcs.tolist(), top3_indcs.tolist()
-
-                top1_score = accuracy_score(targets, top1_indcs)
-                top3_score = accuracy_score(targets, top3_indcs)
-
-                runner.epoch_metrics["_bench_top1_acc"] = top1_score
-                runner.epoch_metrics["_bench_top3_acc"] = top3_score
-
-                is_better = top1_score > self.best_score
-
-                if is_better:
-                    self.best_score = top1_score
-
-                    for prefix, values in {"top1": top1_indcs, "top3": top3_indcs}:
-                        plot_confusion_matrix(
-                            y_true=targets,
-                            y_pred=values,
-                            classes=self.class_names,
-                            normalize=True,
-                            save_to=(save_to / f"_bench_{prefix}_main_cm").as_posix()
-                        )
-
-                        benchmark = self._benchmark(filenames, targets, values)
-                        result = self._save_benchmark(benchmark, save_to, prefix)
-                        for k, v in result:
-                            runner.epoch_metrics[f"_bench_{prefix}_{k}_acc"] = v
-
-            if is_better:
-                data = {k: [] for k in XLS_KEYS}
-                for loader_name, loader_values in self.data.items():
-                    if loader_name in ["train", "valid"]:
-                        self._save_pickle(loader_values, save_to, loader_name)
-
-                    for key in XLS_KEYS:
-                        data[key] += loader_values[key]
-
-                self._save_excel(data, save_to, "data")
+            self._save_pickle(pkl_data, save_to, runner.loader_name)
+            self._save_excel(xls_data, save_to, runner.loader_name)
