@@ -63,6 +63,7 @@ class BenchmarkingCallback(Callback):
             doev2_xlsx: str = None,
 
             save_dir: str = None,
+            save_loaders: Union[str, List[str]] = None,
     ):
         super().__init__(CallbackOrder.Metric)
 
@@ -98,6 +99,8 @@ class BenchmarkingCallback(Callback):
             self.doev2_dfs: Dict[str, pd.DataFrame] = \
                 pd.read_excel(doev2_xlsx, sheet_name=None)
 
+        self.save_loaders = save_loaders
+
     def _init(self):
         self.data = {}
 
@@ -105,11 +108,11 @@ class BenchmarkingCallback(Callback):
         return t.detach().cpu().numpy()
 
     def _read_pickle(self, pickle_dir: Path, name="all"):
-        pickle_path = pickle_dir / (name + ".pickle")
+        pickle_path = pickle_dir / (name + ".pkl")
         return pickle.loads(open(pickle_path, "rb").read())
 
     def _save_pickle(self, embeddings, pickle_dir: Path, name: str):
-        with open((pickle_dir / (name + ".pickle")).as_posix(), "wb") as file:
+        with open((pickle_dir / (name + ".pkl")).as_posix(), "wb") as file:
             pickle.dump(obj=embeddings, file=file)
 
     def _save_excel(self, embeddings, csv_dir: Path, name: str):
@@ -130,12 +133,9 @@ class BenchmarkingCallback(Callback):
     def doev1(self, runner: "IRunner"):
 
         metrics = {
-            "All": 0,
-            "Recognized": 0,
-            "NotRecognized": 0,
-            "Top1": 0,
-            "Top2": 0,
-            "Top3": 0,
+            "target": [],
+            "top1": [],
+            "top3": [],
         }
 
         train_data = self._gather_data(self.doev1_train_loaders)
@@ -160,30 +160,27 @@ class BenchmarkingCallback(Callback):
 
             targets = [r["label"] for r in results]
 
+            top1 = targets[0]
             try:
-                position = targets.index(target) + 1
-
-                metrics["Recognized"] += 1
-                metrics[f"Top{position}"] += 1
+                top3 = targets[targets.index(target)]
             except ValueError:
-                metrics["NotRecognized"] += 1
+                top3 = top1
 
-            metrics["All"] += 1
+            metrics["target"].append(target)
+            metrics["top1"].append(top1)
+            metrics["top3"].append(top3)
 
         runner.epoch_metrics.update(**{
-            "doev1_top1_acc": metrics["Top1"] / metrics["All"],
-            "doev1_top3_acc": metrics["Top3"] / metrics["All"],
+            "doev1_top1_acc": accuracy_score(metrics["top1"], metrics["target"]),
+            "doev1_top3_acc": accuracy_score(metrics["top3"], metrics["target"]),
         })
 
     def doev2(self, runner: "IRunner"):
 
         metrics = {
-            "All": 0,
-            "Recognized": 0,
-            "NotRecognized": 0,
-            "Top1": 0,
-            "Top2": 0,
-            "Top3": 0,
+            "target": [],
+            "top1": [],
+            "top3": [],
         }
 
         train_data = self._gather_data(self.doev2_train_loaders)
@@ -239,28 +236,26 @@ class BenchmarkingCallback(Callback):
 
                 targets = [r["label"] for r in results]
 
+                top1 = targets[0]
                 try:
-                    position = targets.index(target) + 1
-
-                    metrics["Recognized"] += 1
-                    metrics[f"Top{position}"] += 1
+                    top3 = targets[targets.index(target)]
                 except ValueError:
-                    metrics["NotRecognized"] += 1
+                    top3 = top1
 
-                metrics["All"] += 1
-
-            end = time()
+                metrics["target"].append(target)
+                metrics["top1"].append(top1)
+                metrics["top3"].append(top3)
 
         runner.epoch_metrics.update(**{
-            "doev2_top1_acc": metrics["Top1"] / metrics["All"],
-            "doev2_top3_acc": metrics["Top3"] / metrics["All"],
+            "doev2_top1_acc": accuracy_score(metrics["top1"], metrics["target"]),
+            "doev2_top3_acc": accuracy_score(metrics["top3"], metrics["target"]),
         })
         
     def benchmark(self, runner: "IRunner"):
 
         metrics = {
             k: {"target": [], "top1": [], "top3": []}
-            for k in ["size", "dishware", "trial", "scale", "recipekind"]
+            for k in ["size", "dishware", "trial", "scale", "recipe kind"]
         }
 
         train_data = self._gather_data(self.benchmark_train_loader)
@@ -365,21 +360,29 @@ class BenchmarkingCallback(Callback):
     def on_stage_end(self, runner: "IRunner") -> None:
 
         if self.save_dir is not None:
-            save_to: Path = \
-                Path(runner.logdir) / "embeddings" / self.save_dir
+            save_to: Path = Path(runner.logdir) / "embeddings" / self.save_dir
 
             save_to.mkdir(parents=True, exist_ok=True)
 
-            pkl_data = {k: [] for k in PKL_KEYS}
-            xls_data = {k: [] for k in XLS_KEYS}
-            for loader_name, loader_values in self.data.items():
-                self._save_pickle(loader_values, save_to, loader_name)
-
-                for key in XLS_KEYS:
-                    xls_data[key] += loader_values[key]
-
+            for loader_name, loader_data in self.data.items():
+                pkl_data = {}
                 for key in PKL_KEYS:
-                    pkl_data[key] += loader_values[key]
+                    pkl_data[key] = loader_data[key]
+                self._save_pickle(pkl_data, save_to, loader_name)
 
-            self._save_pickle(pkl_data, save_to, runner.loader_name)
-            self._save_excel(xls_data, save_to, runner.loader_name)
+            data = self._gather_data(self.save_loaders)
+
+            pkl_data = {}
+            for key in data.keys():
+                if key in PKL_KEYS:
+                    pkl_data[key] = data[key]
+
+            self._save_pickle(pkl_data, save_to, "all")
+            # self._save_excel(xls_data, save_to, runner.stage_name)
+
+            index = build_index(
+                embeddings=data[OUTPUT_EMBEDDINGS_KEY],
+                labels=data[INPUT_TARGET_KEY],
+            )
+
+            faiss.write_index(index, str(save_to / "database.index"))

@@ -11,7 +11,7 @@ from src.callbacks.cico.benchmark import BenchmarkingCallback
 from src.models.cico.generic import GenericModel
 from src.schedulers.cosine import CosineAnnealingWarmUpRestarts
 from src.losses.cico.arcface import ArcFaceLinear, ArcFaceLoss, L2Norm
-from src.losses.cico.triplet import TripletLossV3
+from src.losses.cico.triplet import TripletSemiHardLoss
 
 registry.Model(GenericModel)
 
@@ -19,7 +19,7 @@ registry.Module(L2Norm)
 registry.Module(ArcFaceLinear)
 
 registry.Criterion(ArcFaceLoss)
-registry.Criterion(TripletLossV3)
+registry.Criterion(TripletSemiHardLoss)
 
 registry.Callback(VisualizationCallback)
 registry.Callback(ProjectorCallback)

@@ -54,6 +54,8 @@ class Experiment(ConfigExperiment):
         if stage.startswith("infer"):
             datasets["infer_train"] = datasets["train"]
             del datasets["train"]
+            datasets["infer_valid"] = datasets["valid"]
+            del datasets["valid"]
 
             if "doe" in stage:
                 datasets["infer_valid"] = datasets["valid"]

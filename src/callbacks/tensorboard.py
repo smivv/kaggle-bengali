@@ -8,6 +8,7 @@ import torchvision.utils
 
 import numpy as np
 
+from pathlib import Path
 from torch import Tensor
 from numpy import ndarray
 
@@ -88,7 +89,7 @@ class TensorboardCallback(Callback):
                 Frequency of process to be called (default=None).
         """
         super(TensorboardCallback, self).__init__(
-            order=CallbackOrder.External#, node=CallbackNode.master
+            order=CallbackOrder.logging + 1#, node=CallbackNode.master
         )
 
         assert batch_frequency is None or batch_frequency > 0
@@ -104,6 +105,8 @@ class TensorboardCallback(Callback):
         self._loader_batch_count = 0
         self._loader_processed_in_current_epoch = False
         self._reset()
+
+        self.logger = None
 
     @staticmethod
     def _check_keys(keys) -> List[str]:
@@ -158,6 +161,8 @@ class TensorboardCallback(Callback):
                 and runner.loader_name in runner.callbacks[tb_key].loggers
         ):
             return runner.callbacks[tb_key].loggers[runner.loader_name]
+        # elif runner.stage_name.startswith("infer"):
+        #     return SummaryWriter(str(Path(runner.logdir) / f"infer_log"))
         raise RuntimeError(
             f"Cannot find Tensorboard logger for loader {runner.loader_name}"
         )
@@ -278,12 +283,12 @@ class TensorboardCallback(Callback):
             runner (Runner): Runner class
 
         """
-        self._loader_batch_count += 1
-
         if self._batch_frequency is None:
             self.run(runner=runner)
-        elif self._loader_batch_count % self._batch_frequency:
+        elif not (self._loader_batch_count % self._batch_frequency):
             self.run(runner=runner)
+
+        self._loader_batch_count += 1
 
     def on_loader_end(self, runner: Runner):
         """
@@ -564,7 +569,7 @@ class ProjectorCallback(VisualizationCallback):
             mat=embeddings,
             metadata=labels,
             label_img=images,
-            global_step=runner.global_sample_step,
+            global_step=runner.global_batch_step,
         )
 
     def run(self, runner: Runner):
